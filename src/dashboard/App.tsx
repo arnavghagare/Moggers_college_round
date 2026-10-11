@@ -21,7 +21,7 @@ const PHASE_LABEL: Record<string, string> = {
   loading: 'Starting',
   grace: 'Getting ready',
   active: 'Live',
-  paused: 'Paused',
+  paused: 'Actions paused',
   suspended: 'Paused: tracking lost',
   error: 'Stopped',
 };

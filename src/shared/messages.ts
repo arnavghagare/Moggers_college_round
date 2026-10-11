@@ -274,7 +274,11 @@ export type BrowserCommand =
   | 'openUrl'
   | 'navigate'
   | 'duplicateTab'
-  | 'openDashboard';
+  | 'openDashboard'
+  | 'searchTab'
+  | 'searchPage'
+  | 'openSettings'
+  | 'incognito';
 
 const BROWSER_COMMANDS: readonly BrowserCommand[] = [
   'back',
@@ -293,6 +297,10 @@ const BROWSER_COMMANDS: readonly BrowserCommand[] = [
   'navigate',
   'duplicateTab',
   'openDashboard',
+  'searchTab',
+  'searchPage',
+  'openSettings',
+  'incognito',
 ];
 
 /*
@@ -320,6 +328,8 @@ export interface WorkerResponse {
   ok: boolean;
   enabled?: boolean;
   error?: string;
+  /** Something the user should know although the command worked. */
+  note?: string;
   activeTab?: ActiveTabInfo;
   /** Raw stored settings; the receiver sanitizes them. */
   settings?: unknown;

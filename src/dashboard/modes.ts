@@ -1,3 +1,4 @@
+import type { DeepPartial, Settings } from '../shared/settings';
 import type { ControlMode } from '../shared/types';
 
 /** The three ways to use Handsfree. Everything in the UI is organised around these. */
@@ -44,6 +45,10 @@ export const MODES: ModeInfo[] = [
     needs: 'Microphone + internet',
   },
 ];
+
+/** The settings change that selects a mode. Voice mode is useless with voice switched off, so it turns it on. */
+export const modePatch = (id: ModeInfo['id']): DeepPartial<Settings> =>
+  id === 'voice' ? { controlMode: id, features: { voice: true } } : { controlMode: id };
 
 /** A stored "hybrid" setting from an older version behaves as head mode in this UI. */
 export const currentMode = (mode: ControlMode): ModeInfo => MODES.find((m) => m.id === mode) ?? MODES[0];

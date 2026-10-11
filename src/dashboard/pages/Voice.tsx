@@ -3,15 +3,15 @@ import { PARAMETER_COMMANDS, VOICE_COMMANDS, type VoiceCommand } from '../../cor
 import { VOICE_LANGUAGES } from '../../shared/settings';
 import { Alert, Chip, Meter, PageHead, Select, Slider, Switch, pct } from '../components';
 import { requestMedia, useEngine, usePermission } from '../engine';
+import { modePatch } from '../modes';
+import { describeRun, voiceLabel } from '../runState';
 import { StatusAlerts } from './Home';
 
 const GROUPS: Array<VoiceCommand['group']> = ['Pointer', 'Numbers', 'Navigation', 'Media', 'Text entry', 'Modes', 'System'];
 
-const STATE_TEXT: Record<string, string> = { off: 'Off', starting: 'Starting', listening: 'Listening', muted: 'Muted', error: 'Error' };
-
 const RESULT_TEXT: Record<string, string> = {
   executed: 'Done',
-  blocked: 'Not right now',
+  blocked: 'Heard, not carried out',
   pending: 'Confirm?',
   rejected: 'Did not catch that',
   ambiguous: 'Could be two things',
@@ -34,9 +34,14 @@ export function Voice() {
   const microphone = usePermission('microphone');
   const [permissionMessage, setPermissionMessage] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
+  // What is being typed. The stored wake word is cleaned as it is saved (no trailing space,
+  // never empty), which would otherwise fight the keyboard mid-word.
+  const [wakeDraft, setWakeDraft] = useState<string | null>(null);
   const [turns, setTurns] = useState<Turn[]>([]);
   const isVoice = settings.controlMode === 'voice';
   const listening = voice?.state === 'listening';
+  const run = describeRun(enabled, status, 'Voice mode');
+  const [voiceText] = voiceLabel(voice);
 
   // Build the conversation from each newly handled phrase.
   const handled = (status?.stats.executedCommands ?? 0) + (status?.stats.failedCommands ?? 0);
@@ -47,7 +52,8 @@ export function Voice() {
     if (key === seen.current) return;
     seen.current = key;
     const ok = voice.lastStatus === 'executed' || voice.lastStatus === 'dictated' || voice.lastStatus === 'pending';
-    const reply = voice.lastIntent && ok ? `${voice.lastIntent}${voice.lastStatus === 'pending' ? ' - say "confirm"' : ''}` : voice.lastMessage || RESULT_TEXT[voice.lastStatus];
+    const meant = voice.lastIntent ? `${voice.lastIntent}${voice.lastPayload ? `: ${voice.lastPayload}` : ''}` : '';
+    const reply = meant && ok ? `${meant}${voice.lastStatus === 'pending' ? ' - say "confirm"' : ''}` : voice.lastMessage || RESULT_TEXT[voice.lastStatus];
     setTurns((t) => [{ key, phrase: voice.lastPhrase, reply, ok }, ...t].slice(0, 14));
   }, [voice?.lastPhrase, voice?.lastStatus, voice?.lastIntent, voice?.lastMessage, handled]);
 
@@ -55,7 +61,7 @@ export function Voice() {
     <>
       <PageHead title="Voice mode" lead="Say it and it happens. Every link gets a number, and you can open sites, scroll, type and switch tabs by talking.">
         {!isVoice && (
-          <button type="button" className="btn primary big" onClick={() => engine.patch({ controlMode: 'voice', features: { voice: true } })}>
+          <button type="button" className="btn primary big" onClick={() => engine.patch(modePatch('voice'))}>
             Use voice mode
           </button>
         )}
@@ -98,8 +104,26 @@ export function Voice() {
 
         <div className="grid two" style={{ alignItems: 'start' }}>
           <section className="card loud">
-            <h2>{enabled ? (voice?.dictating ? 'Dictating' : STATE_TEXT[voice?.state ?? 'off']) : 'Off'}</h2>
-            <p>{voice?.interim ? `"${voice.interim}"` : listening ? 'Go ahead, say something.' : 'The microphone is not listening.'}</p>
+            <h2>{enabled ? run.headline : 'Off'}</h2>
+            <p>{voice?.interim ? `"${voice.interim}"` : !enabled ? 'The microphone is not listening.' : run.detail}</p>
+            <dl className="kv" aria-live="polite" style={{ marginBottom: 16 }}>
+              <dt>Voice</dt>
+              <dd>{enabled ? voiceText : 'Off'}</dd>
+              <dt>Heard</dt>
+              <dd>{voice?.lastPhrase ? `"${voice.lastPhrase}"` : '-'}</dd>
+              <dt>Understood as</dt>
+              <dd>{voice?.lastPhrase ? (voice.lastIntent ?? 'Not a command') : '-'}</dd>
+              <dt>Value</dt>
+              <dd>{voice?.lastPayload || '-'}</dd>
+              <dt>Result</dt>
+              <dd>{voice?.lastPhrase && voice.lastStatus ? `${RESULT_TEXT[voice.lastStatus]}${voice.lastStatus !== 'executed' && voice.lastMessage ? `: ${voice.lastMessage}` : ''}` : '-'}</dd>
+              {voice?.lastNote && (
+                <>
+                  <dt>Browser said</dt>
+                  <dd>{voice.lastNote}</dd>
+                </>
+              )}
+            </dl>
             <div className="stack">
               <div className="field">
                 <div className="field-head">
@@ -119,8 +143,17 @@ export function Voice() {
                 </span>
               </div>
               <div className="row">
+                <button type="button" className={`btn${run.paused ? ' primary' : ''}`} disabled={!status || status.phase === 'error' || status.phase === 'loading'} onClick={() => engine.act('toggle_pause')}>
+                  {run.awaitingStart ? 'Start' : run.paused ? 'Resume' : 'Pause'}
+                </button>
                 <button type="button" className="btn" disabled={!status || !settings.features.voice} onClick={() => engine.act('toggle_listening')}>
-                  {listening || voice?.state === 'starting' ? 'Mute' : v.mode === 'push' ? 'Listen now' : 'Unmute'}
+                  {listening || voice?.state === 'starting' || voice?.state === 'reconnecting'
+                    ? 'Stop listening'
+                    : v.mode === 'push'
+                      ? 'Listen now'
+                      : voice?.state === 'error'
+                        ? 'Reconnect voice'
+                        : 'Start listening'}
                 </button>
                 <button type="button" className="btn" disabled={!status || !settings.features.voice} onClick={() => engine.act(voice?.dictating ? 'stop_dictation' : 'start_dictation')}>
                   {voice?.dictating ? 'Stop dictation' : 'Start dictation'}
@@ -151,7 +184,13 @@ export function Voice() {
         <div className="grid two" style={{ alignItems: 'start' }}>
           <section className="card stack">
             <h2>Settings</h2>
-            <Switch label="Voice" hint="When off, the microphone is never opened." checked={settings.features.voice} onChange={(on) => engine.patch({ features: { voice: on } })} />
+            <Switch
+              label="Voice"
+              hint={isVoice ? 'Voice mode needs this. Pick head or hand mode to switch voice off.' : 'When off, the microphone is never opened.'}
+              checked={settings.features.voice}
+              disabled={isVoice && settings.features.voice}
+              onChange={(on) => engine.patch({ features: { voice: on } })}
+            />
             <Switch
               label="Numbers always on (voice mode)"
               hint="Keeps a number on every link and button so you only have to say it."
@@ -178,8 +217,20 @@ export function Voice() {
             {v.mode === 'wake' && (
               <div className="field">
                 <label htmlFor="wake-word">Wake word</label>
-                <input id="wake-word" type="text" value={v.wakeWord} maxLength={24} onChange={(e) => engine.patch({ voice: { wakeWord: e.target.value } })} />
-                <span className="hint">Say it first, like "{v.wakeWord} scroll down".</span>
+                <input
+                  id="wake-word"
+                  type="text"
+                  value={wakeDraft ?? v.wakeWord}
+                  maxLength={24}
+                  autoComplete="off"
+                  spellCheck={false}
+                  onChange={(e) => {
+                    setWakeDraft(e.target.value);
+                    engine.patch({ voice: { wakeWord: e.target.value } });
+                  }}
+                  onBlur={() => setWakeDraft(null)}
+                />
+                <span className="hint">Letters and spaces only. Say it first, like "{v.wakeWord} scroll down".</span>
               </div>
             )}
             <Select label="Accent" value={v.lang} options={VOICE_LANGUAGES.map((l) => ({ value: l.code, label: l.label }))} hint="Commands are in English." onChange={(lang) => engine.patch({ voice: { lang } })} />

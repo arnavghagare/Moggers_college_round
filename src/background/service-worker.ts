@@ -103,15 +103,32 @@ async function injectIntoOpenTabs(): Promise<void> {
   );
 }
 
+/**
+ * Turning on and off are several awaited steps each. A button press and a
+ * keyboard shortcut (or two open pages) can ask at the same moment, so the
+ * requests run one after another instead of interleaving.
+ */
+let powerQueue: Promise<unknown> = Promise.resolve();
+function serialised(task: () => Promise<WorkerResponse>): Promise<WorkerResponse> {
+  const next = powerQueue.then(task, task);
+  powerQueue = next.catch(() => undefined);
+  return next;
+}
+
 async function enable(): Promise<WorkerResponse> {
   if (!(await hasEngine())) {
     await chrome.storage.local.remove(ENGINE_ERROR_KEY);
-    await chrome.offscreen.createDocument({
-      url: OFFSCREEN_URL,
-      reasons: [chrome.offscreen.Reason.USER_MEDIA],
-      justification:
-        'Runs webcam head and hand tracking and speech recognition for hands-free control while no extension page is visible.',
-    });
+    try {
+      await chrome.offscreen.createDocument({
+        url: OFFSCREEN_URL,
+        reasons: [chrome.offscreen.Reason.USER_MEDIA],
+        justification:
+          'Runs webcam head and hand tracking and speech recognition for hands-free control while no extension page is visible.',
+      });
+    } catch (err) {
+      // Another request created it in the meantime: that is the outcome we wanted.
+      if (!(await hasEngine())) throw err;
+    }
   }
   await chrome.storage.local.set({ [RUNTIME_KEY]: { enabled: true } });
   await setBadge(true);
@@ -156,6 +173,61 @@ async function openDashboard(route = ''): Promise<void> {
     if (existing.windowId !== undefined) await chrome.windows.update(existing.windowId, { focused: true });
   } else {
     await chrome.tabs.create({ url });
+  }
+}
+
+/** A web search for exactly these words. The query is encoded, never interpreted. */
+function searchUrl(query: string): string {
+  return `https://www.google.com/search?${new URLSearchParams({ q: query })}`;
+}
+
+/**
+ * Runs inside the page: put the query into the page's own search box and submit it.
+ * Self-contained, because it is serialised and injected.
+ */
+function fillSearchField(query: string): boolean {
+  const selector = [
+    'input[type="search"]',
+    '[role="search"] input',
+    'input[role="searchbox"]',
+    'input[name="q"]',
+    'textarea[name="q"]',
+    'input[name="search"]',
+    'input[name="query"]',
+    'input[name="search_query"]',
+    'input[aria-label*="search" i]',
+    'input[placeholder*="search" i]',
+  ].join(',');
+  for (const el of Array.from(document.querySelectorAll(selector))) {
+    if (!(el instanceof HTMLInputElement) && !(el instanceof HTMLTextAreaElement)) continue;
+    const box = el.getBoundingClientRect();
+    if (el.disabled || el.readOnly || box.width < 20 || box.height < 8) continue;
+    el.focus();
+    // Through the native setter, so frameworks that track the value notice the change.
+    const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(proto, 'value')?.set?.call(el, query);
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    if (el.form) {
+      el.form.requestSubmit();
+    } else {
+      for (const type of ['keydown', 'keypress', 'keyup']) {
+        el.dispatchEvent(new KeyboardEvent(type, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+      }
+    }
+    return true;
+  }
+  return false;
+}
+
+/** True when the page had a search box and the query was submitted through it. */
+async function searchWithinPage(tabId: number, query: string): Promise<boolean> {
+  try {
+    const [injected] = await chrome.scripting.executeScript({ target: { tabId }, func: fillSearchField, args: [query] });
+    return injected?.result === true;
+  } catch {
+    // Browser pages and the Handsfree pages cannot be scripted: fall back to a web search.
+    return false;
   }
 }
 
@@ -219,8 +291,35 @@ async function runBrowserCommand(cmd: BrowserCommand, number?: number, text?: st
       const query = (text ?? '').trim();
       if (!query) return { ok: false, error: 'Nothing to search for.' };
       // The query is only ever placed in a search URL, never navigated to directly.
-      await chrome.tabs.create({ url: `https://www.google.com/search?q=${encodeURIComponent(query)}` });
+      await chrome.tabs.create({ url: searchUrl(query) });
       break;
+    }
+    case 'searchTab':
+    case 'searchPage': {
+      const query = (text ?? '').trim();
+      if (!query) return { ok: false, error: 'Nothing to search for.' };
+      if (cmd === 'searchPage' && id !== undefined && (await searchWithinPage(id, query))) break;
+      // The dashboard is where Handsfree is set up and watched, so it is never navigated away.
+      const dashboard = tab?.url?.startsWith(chrome.runtime.getURL(DASHBOARD_URL)) ?? false;
+      if (id === undefined || dashboard) await chrome.tabs.create({ url: searchUrl(query) });
+      else await chrome.tabs.update(id, { url: searchUrl(query) });
+      break;
+    }
+    case 'openSettings':
+      // A browser page: it can be opened, but no extension may control what is on it.
+      await chrome.tabs.create({ url: 'chrome://settings/' });
+      return { ok: true, note: 'Browser settings opened. Chrome does not let extensions control this page, so the cursor and numbers stop here.' };
+    case 'incognito': {
+      try {
+        await chrome.windows.create({ incognito: true, focused: true });
+      } catch {
+        return { ok: false, error: 'Chrome did not allow an incognito window to be opened here.' };
+      }
+      if (await chrome.extension.isAllowedIncognitoAccess()) break;
+      return {
+        ok: true,
+        note: 'Incognito window opened. To use Handsfree in it, switch on "Allow in Incognito" for Handsfree on the chrome://extensions page.',
+      };
     }
     case 'openUrl':
     case 'navigate': {
@@ -250,9 +349,9 @@ chrome.runtime.onMessage.addListener((raw, sender, sendResponse) => {
   const run = async (): Promise<WorkerResponse> => {
     switch (request.type) {
       case 'hf/enable':
-        return enable();
+        return serialised(enable);
       case 'hf/disable':
-        return disable();
+        return serialised(disable);
       case 'hf/state':
         return { ok: true, enabled: await hasEngine() };
       case 'hf/active-tab':
@@ -284,8 +383,8 @@ chrome.commands.onCommand.addListener((command) => {
   void (async () => {
     const running = await hasEngine();
     if (command === 'toggle-handsfree') {
-      if (running) await disable();
-      else if ((await loadSettings()).onboarded) await enable();
+      if (running) await serialised(disable);
+      else if ((await loadSettings()).onboarded) await serialised(enable);
       else await openDashboard('welcome');
     } else if (command === 'toggle-pause' && running) {
       toEngine({ type: 'hf/engine', kind: 'action', action: 'toggle_pause' });

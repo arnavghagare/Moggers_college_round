@@ -57,7 +57,56 @@ export function wordsToDigits(text: string): string {
 }
 
 /** Words speech recognisers commonly return in place of a spoken digit. */
-const NUMBER_HOMOPHONES: Record<string, number> = { won: 1, to: 2, too: 2, for: 4, fore: 4, ate: 8 };
+const NUMBER_HOMOPHONES: Record<string, number> = { won: 1, to: 2, too: 2, tu: 2, tree: 3, free: 3, for: 4, fore: 4, ate: 8 };
+
+const ORDINALS: Record<string, number> = {
+  first: 1, second: 2, third: 3, fourth: 4, fifth: 5, sixth: 6, seventh: 7, eighth: 8, ninth: 9, tenth: 10,
+};
+
+function ordinalNumber(token: string): number | null {
+  if (Object.prototype.hasOwnProperty.call(ORDINALS, token)) return ORDINALS[token];
+  const m = /^(\d{1,2})(?:st|nd|rd|th)$/.exec(token);
+  return m ? Number(m[1]) : null;
+}
+
+/**
+ * "tab" is very often heard as "tap" ("go to tap to" for "go to tab two").
+ * "tap" on its own is a click command, so it is only read as "tab" where a
+ * tab is clearly meant: after a word that goes with tabs. Closing a tab is
+ * deliberately left out: a command that loses work has to be heard exactly.
+ */
+const TAB_CONTEXT =
+  /\b(next|previous|last|first|second|third|fourth|fifth|new|this|other|another|switch|switch to|switch the|change|change to|duplicate|go to|go to the|move to|jump to|to the|open a new|open new) taps?\b/g;
+
+export function fixTabHomophone(norm: string): string {
+  return norm.replace(TAB_CONTEXT, (whole) => whole.replace(/tap(s?)$/, 'tab$1'));
+}
+
+const MAIL_HOSTS = /^(?:gmail|googlemail|yahoo|ymail|outlook|hotmail|live|msn|icloud|me|proton|protonmail|rediffmail|aol|zoho|yandex)$/;
+const SPOKEN_SYMBOLS: Record<string, string> = { dot: '.', period: '.', underscore: '_', dash: '-', hyphen: '-', minus: '-', plus: '+' };
+
+/**
+ * An email address as a recogniser writes it down ("Arnav 14 Ghagare@gmail.com",
+ * "arnav fourteen ghagare at gmail dot com") becomes the address that was
+ * meant: one word, lower case ("arnav14ghagare@gmail.com").
+ *
+ * Only a phrase that is an address from start to finish is touched. Anything
+ * else - a sentence that merely ends in a domain, a URL, a query with an "@"
+ * in the middle - comes back exactly as it went in.
+ */
+export function tidySpokenEmail(text: string): string {
+  const raw = text.trim();
+  const m = /^(.+?)(\s*@\s*|\s+at(?:\s+the\s+rate(?:\s+of)?)?\s+)((?:[a-z0-9-]+\s*(?:\.|\bdot\b)\s*)+[a-z]{2,})$/i.exec(raw);
+  if (!m) return text;
+  const host = m[3].toLowerCase().replace(/\s*\bdot\b\s*/g, '.').replace(/\s+/g, '');
+  // "deals at amazon.com" is not an address: a spoken "at" only counts in front of a mail provider.
+  if (!m[2].includes('@') && !MAIL_HOSTS.test(host.split('.')[0])) return text;
+  const words = wordsToDigits(m[1].toLowerCase().trim().replace(/\s+/g, ' ')).split(' ');
+  if (words.length > 6) return text;
+  const local = words.map((w) => (Object.prototype.hasOwnProperty.call(SPOKEN_SYMBOLS, w) ? SPOKEN_SYMBOLS[w] : w)).join('');
+  const address = `${local}@${host}`;
+  return /^[a-z0-9][a-z0-9._+-]*@[a-z0-9-]+(?:\.[a-z0-9-]+)+$/.test(address) ? address : text;
+}
 
 function slotNumber(token: string): number | null {
   if (/^\d{1,3}$/.test(token)) return Number(token);
@@ -155,6 +204,62 @@ const synthetic = (action: ActionId, phrase: string, params: ActionParams): Pars
   confirm: false,
 });
 
+/** Sentence punctuation a recogniser adds after the last word. Characters inside the value are kept. */
+const TRAILING_PUNCTUATION = /[.?!,;]+$/;
+
+const SEARCH_VERB = String.raw`(?:search(?:\s+the\s+web)?|google|look\s+up)`;
+const THIS_TAB = String.raw`(?:this|the\s+current|current)\s+(?:tab|page|site|website)|here`;
+// A new tab has to be asked for in so many words: "open tab", "open a new tab", "new tab".
+const NEW_TAB = /^(?:(?:open|create|make|start)\s+(?:a\s+|the\s+|another\s+)?(?:new\s+)?|(?:a\s+)?new\s+)tab\s*,?\s+(?:(?:and|then|to)\s+)*/i;
+const IN_NEW_TAB = /^(?:in|on)\s+(?:a\s+|the\s+)?new\s+tab\s*,?\s+/i;
+const SEARCH_PLAIN = new RegExp(String.raw`^${SEARCH_VERB}(?:\s+for)?(?:\s+(.*))?$`, 'i');
+// "this tab" only counts as the destination when "for" follows it; otherwise the words belong to the query.
+const SEARCH_THIS_TAB = new RegExp(String.raw`^${SEARCH_VERB}\s+(?:in\s+|on\s+)?(?:${THIS_TAB})(?:\s+for(?:\s+(.*))?)?$`, 'i');
+const SEARCH_THIS_TAB_SUFFIX = new RegExp(String.raw`^${SEARCH_VERB}(?:\s+for)?\s+(.+?)\s+(?:in|on)\s+(?:this|the\s+current|current)\s+tab$`, 'i');
+
+export type SearchIntent = 'search' | 'search_new_tab' | 'search_here';
+
+export interface SearchCommand {
+  intent: SearchIntent;
+  /** Exactly what to search for: the user's own words, without the command around them. Empty when none was said. */
+  query: string;
+}
+
+/**
+ * Split a spoken search instruction into what to do and what to search for.
+ *
+ *   "Open tab and search arnav14ghagare@gmail.com" -> new tab, "arnav14ghagare@gmail.com"
+ *   "Search this tab for React tutorials"          -> this tab, "React tutorials"
+ *   "Search for how to open a tab"                 -> search,   "how to open a tab"
+ *
+ * Only the command words at the front are removed. Everything after them is
+ * the query, word for word, so an email address, a URL or a query that itself
+ * contains "open", "search" or "tab" survives untouched.
+ *
+ * @returns null when the phrase is not a search instruction at all.
+ */
+export function parseSearchCommand(raw: string): SearchCommand | null {
+  const text = raw.trim().replace(/^(?:(?:please|hey|ok|okay|can you|could you|would you)\s+)+/i, '');
+  const clean = (q: string | undefined): string => (q ?? '').trim().replace(TRAILING_PUNCTUATION, '').trim();
+
+  // "open [a new] tab and search [for] <query>", "new tab search <query>", "in a new tab search for <query>"
+  for (const prefix of [NEW_TAB, IN_NEW_TAB]) {
+    const lead = prefix.exec(text);
+    if (!lead) continue;
+    const m = SEARCH_PLAIN.exec(text.slice(lead[0].length));
+    if (m) return { intent: 'search_new_tab', query: clean(m[1]) };
+  }
+
+  let m = SEARCH_THIS_TAB.exec(text);
+  if (m) return { intent: 'search_here', query: clean(m[1]) };
+  m = SEARCH_THIS_TAB_SUFFIX.exec(text);
+  if (m) return { intent: 'search_here', query: clean(m[1]) };
+
+  m = SEARCH_PLAIN.exec(text);
+  if (m) return { intent: 'search', query: clean(m[1]) };
+  return null;
+}
+
 /** Commands that carry a spoken parameter. `raw` keeps the original casing for typed text. */
 function parseParameterCommand(norm: string, raw: string, ctx: ParseContext): ParseResult | null {
   let m = /^(?:click|select|choose|open|tap|number|press|go to|focus)(?: number| on)? (\S+)$/.exec(norm);
@@ -165,19 +270,25 @@ function parseParameterCommand(norm: string, raw: string, ctx: ParseContext): Pa
 
   if (ctx.hintsShown && /^\d{1,3}$/.test(norm)) return synthetic('click_number', norm, { number: Number(norm) });
 
-  m = /^(?:(?:switch|go|change|move) to tab|switch tab|tab)(?: number)? (\S+)$/.exec(norm);
+  // "go to tab 2", "switch to tab number 2", "open tab 2", "tab 2"
+  m = /^(?:(?:switch|go|change|move|jump|take me|get) (?:over )?to (?:the )?tabs?|(?:switch|change|open|show|select|choose|activate) (?:the )?tabs?|tabs?)(?: number| no)? (\S+)$/.exec(norm);
   if (m) {
-    const n = slotNumber(m[1]);
+    const n = slotNumber(m[1]) ?? ordinalNumber(m[1]);
+    if (n !== null && n >= 1 && n <= 99) return synthetic('switch_tab', norm, { number: n });
+  }
+  // "first tab", "go to the second tab", "switch to the 3rd tab"
+  m = /^(?:(?:(?:switch|go|change|move|jump|take me|get) (?:over )?to|open|show|select|choose|activate) )?(?:the )?(\S+) tabs?$/.exec(norm);
+  if (m) {
+    const n = ordinalNumber(m[1]);
     if (n !== null && n >= 1 && n <= 99) return synthetic('switch_tab', norm, { number: n });
   }
 
-  if (/^(?:search for|search|google|look up) .+/.test(norm)) {
-    // Use the original words: number conversion must not rewrite a search query.
-    const text = raw
-      .replace(/^\s*(?:please\s+)?(?:search for|search|google|look up)\s+/i, '')
-      .replace(/[.?!]+$/, '')
-      .trim();
-    if (text) return synthetic('search', norm, { text });
+  // Searches are parsed from the original words: number conversion and
+  // punctuation stripping must never rewrite a query.
+  const search = parseSearchCommand(raw);
+  if (search) {
+    if (!search.query) return { status: 'rejected', reason: 'Say what to search for, like "search for train times".' };
+    return synthetic(search.intent, norm, { text: tidySpokenEmail(search.query) });
   }
 
   m = /^press (?:the )?(.+?)(?: key)?$/.exec(norm);
@@ -185,7 +296,7 @@ function parseParameterCommand(norm: string, raw: string, ctx: ParseContext): Pa
 
   if (/^(?:type|write|enter text) .+/.test(norm)) {
     const text = raw.replace(/^\s*(?:please\s+)?(?:type|write|enter text)\s+/i, '').trim();
-    if (text) return synthetic('type_text', norm, { text });
+    if (text) return synthetic('type_text', norm, { text: tidySpokenEmail(text) });
   }
 
   // "open youtube" opens a new tab; "go to youtube" loads it in this one.
@@ -237,7 +348,7 @@ function fuzzyMatch(norm: string): ParseResult | null {
  *   Chrome sometimes reports 0, which also means "unknown".
  */
 export function parseUtterance(text: string, confidence: number | null, ctx: ParseContext): ParseResult {
-  let norm = normalizeUtterance(text);
+  let norm = fixTabHomophone(normalizeUtterance(text));
   let raw = text.trim();
   if (!norm) return { status: 'ignored' };
 

@@ -1,4 +1,5 @@
 import type { HudState } from '../shared/messages';
+import { AWAITING_START } from '../shared/types';
 import type { HintLabelPlacement } from './hints';
 
 const CSS = `
@@ -322,7 +323,10 @@ export class Overlay {
       banner =
         hud.phase === 'suspended'
           ? 'Handsfree paused: tracking lost. Move back into view, or say "resume".'
-          : 'Handsfree is paused. Say "resume" or raise an open hand to continue.';
+          : hud.pausedReason === AWAITING_START
+            ? // One steady message: it must not change each time the recogniser restarts.
+              'Actions are paused. Say "start", or press Alt+Shift+P, to begin browsing.'
+            : 'Handsfree is paused. Say "start" or "resume", press Alt+Shift+P, or raise an open hand, to continue.';
     } else if (hud.phase === 'grace') {
       banner = `Getting ready... clicks unlock in ${Math.ceil(hud.graceRemainingMs / 1000)} s`;
     } else if (hud.phase === 'loading') {

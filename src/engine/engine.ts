@@ -136,7 +136,15 @@ export class Engine {
     return {
       cursor: (x, y, show, ok) => this.toTarget({ t: 'cursor', x: round4(x), y: round4(y), show, ok }),
       page: (action, params) => this.toTarget({ t: 'do', action, params }),
-      browser: (cmd, args) => void send({ type: 'hf/browser', cmd, ...args }),
+      browser: (cmd, args) =>
+        void send({ type: 'hf/browser', cmd, ...args }).then((res) => {
+          // A command that could not be carried out is said so, never passed over in silence.
+          const text = res && !res.ok ? res.error : res?.note;
+          if (!text || this.stopped) return;
+          this.core.notify(text, performance.now());
+          this.broadcastHud(true);
+          this.broadcastStatus(true);
+        }),
       patchSettings: (patch) => void send({ type: 'hf/settings-patch', patch: patch as Record<string, unknown> }),
       setListening: (on) => this.setListening(on),
       exit: () => void send({ type: 'hf/disable' }),

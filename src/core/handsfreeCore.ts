@@ -33,7 +33,7 @@ import { ramp } from './math';
 import { SafetyController } from './safety';
 import { PresenceMonitor, rateFaceQuality, rateHandQuality } from './tracking';
 import { applySpokenPunctuation, DictationSession } from './voice/dictation';
-import { parseAlternatives } from './voice/parser';
+import { parseAlternatives, tidySpokenEmail } from './voice/parser';
 import { resolveSite } from './voice/sites';
 
 export type ActionOrigin = 'gesture' | 'voice' | 'ui' | 'keyboard' | 'confirmed';
@@ -84,6 +84,12 @@ const HYBRID_HAND_OFF_MS = 900;
 const DRIFT_TAU_MS = 15000;
 const DRIFT_LIMIT = 0.4;
 const DRIFT_HOLD_MS = 15000;
+
+/**
+ * Actions that fire wherever the cursor happens to be. During the warm-up
+ * after "start" the cursor has not settled, so these stay locked even when spoken.
+ */
+const POINTER_ACTIONS: ReadonlySet<ActionId> = new Set<ActionId>(['click', 'double_click', 'right_click', 'drag_start', 'drag']);
 
 const SPEECH_ERRORS: Record<string, { message: string; recovery: string; fatal: boolean }> = {
   'not-allowed': {
@@ -197,6 +203,8 @@ export class HandsfreeCore {
   private muted = false;
   private pushUntil = 0;
   private voiceFatal = false;
+  /** Recognition results already acted on, so a result delivered twice runs once. */
+  private readonly handledResults = new Set<string>();
   private readonly voice: VoiceStatus;
 
   private notice = '';
@@ -211,7 +219,9 @@ export class HandsfreeCore {
     private readonly sink: CoreSink,
   ) {
     this.settings = settings;
-    this.safety = new SafetyController(settings.safety);
+    // With voice available, hearing and acting are separate: Handsfree listens
+    // straight away but does nothing until it is told to start.
+    this.safety = new SafetyController(settings.safety, !settings.features.voice);
     this.handEngine = new HandGestureEngine(settings.gestures);
     this.faceEngine = new FaceGestureEngine(settings.gestures);
     this.headPipeline = new PointerPipeline(pointerConfig(settings));
@@ -225,9 +235,12 @@ export class HandsfreeCore {
       interim: '',
       lastPhrase: '',
       lastIntent: null,
+      lastPayload: '',
       lastConfidence: null,
       lastStatus: null,
       lastMessage: '',
+      lastExecuted: '',
+      lastNote: '',
       micState: 'off',
       micLevel: 0,
       noiseFloor: 0,
@@ -263,6 +276,15 @@ export class HandsfreeCore {
     }
     if (!settings.features.voice && this.dictation.active) this.dictation.stop();
     if (!settings.features.faceGestures) this.faceEngine.reset();
+    // Voice was switched off while Handsfree was still waiting to hear "start": nobody can say it now.
+    if (!settings.features.voice && this.safety.awaitingStart) this.safety.resume(t);
+    const reach = (s: Settings): string => `${s.cursor.handCenterX}|${s.cursor.handCenterY}|${s.cursor.handArea}|${s.cursor.handAnchor}`;
+    if (reach(prev) !== reach(settings)) {
+      // A new reach (for example after calibrating) moves where the hand points: glide there, never jump.
+      this.handPipeline.reset();
+      this.handPipeline.syncTo(this.cursor.position);
+      this.cursor.beginGlide();
+    }
     this.syncListening(t);
   }
 
@@ -355,11 +377,14 @@ export class HandsfreeCore {
   /** Time-based housekeeping. Called from `frame()`, or on a timer in voice-only mode. */
   tick(t: number): void {
     this.now = t;
+    // Voice mode has no camera frames, so the cursor source must be kept current here too.
+    this.updateSource(t);
     const voiceOnly = this.source === 'none';
     const event = this.safety.tick(t, voiceOnly || this.trackingHealthy());
     if (event === 'auto-paused') {
       this.stats.autoPauses += 1;
       this.releaseHeld(t, 'tracking lost');
+      this.dictation.stop();
       this.say('Paused: tracking was lost. Move back into view to continue.', 'warn');
     } else if (event === 'recovered') {
       this.stats.recoveries += 1;
@@ -729,6 +754,13 @@ export class HandsfreeCore {
     this.sink.page('toast', { text, tone });
   }
 
+  /** Feedback from outside the core (the browser refusing a command, for example). */
+  notify(text: string, t: number): void {
+    this.now = t;
+    this.voice.lastNote = text;
+    this.say(text, 'warn');
+  }
+
   private setPending(prompt: string, confirm: () => void, cancel: () => void, id?: string): Pending {
     if (this.pending) this.cancelPending('replaced');
     const pending: Pending = {
@@ -759,7 +791,12 @@ export class HandsfreeCore {
     this.now = t;
     const def = ACTIONS[action];
     const verdict = this.safety.check(action);
-    if (!verdict.allowed) return this.blocked(verdict.reason);
+    if (!verdict.allowed) {
+      // The warm-up lock exists so that a cursor or a gesture cannot fire before the user has
+      // settled. A command said out loud right after "start" is no accident, so it goes through.
+      const spokenInWarmUp = this.safety.phase === 'grace' && (origin === 'voice' || origin === 'confirmed') && !POINTER_ACTIONS.has(action);
+      if (!spokenInWarmUp) return this.blocked(verdict.reason);
+    }
     if (this.calSession?.active && !def.allowedWhilePaused) {
       return this.blocked('Calibration is running. Say "cancel" to stop it.');
     }
@@ -904,9 +941,24 @@ export class HandsfreeCore {
         this.sink.browser('zoomReset');
         return this.done(def.label);
       case 'search':
-        if (!params.text) return this.blocked('Say what to search for.');
-        this.sink.browser('search', { text: params.text });
-        return this.done(`Searching for "${params.text}"`);
+      case 'search_new_tab':
+      case 'search_here': {
+        const query = (params.text ?? '').trim();
+        if (!query) return this.blocked('Say what to search for.');
+        // The query only ever becomes a search. It is never navigated to, typed as a command or run.
+        if (action === 'search_new_tab') {
+          this.sink.browser('search', { text: query });
+          return this.done(`New tab: searching for "${query}"`);
+        }
+        this.sink.browser(action === 'search_here' ? 'searchPage' : 'searchTab', { text: query });
+        return this.done(`Searching for "${query}"`);
+      }
+      case 'browser_settings':
+        this.sink.browser('openSettings');
+        return this.done('Opening browser settings');
+      case 'incognito_window':
+        this.sink.browser('incognito');
+        return this.done('Opening an incognito window');
 
       case 'show_numbers':
         this.hintsWanted = true;
@@ -1027,7 +1079,9 @@ export class HandsfreeCore {
     if (!event) return this.blocked('Already paused.');
     this.releaseHeld(t, 'paused');
     this.cancelPending('paused');
-    return this.done('Paused. Say "resume" to continue.');
+    // Dictation would keep typing what it hears: pausing ends it.
+    this.dictation.stop();
+    return this.done('Paused. Say "start" or "resume" to continue.');
   }
 
   private resume(t: number): ExecuteResult {
@@ -1101,17 +1155,26 @@ export class HandsfreeCore {
           this.voice.error = null;
           this.voice.recovery = null;
         } else if (ev.state === 'starting') {
-          if (this.voice.state !== 'error') this.voice.state = 'starting';
-        } else if (this.voice.state !== 'error') {
+          if (this.voice.state !== 'error' && this.voice.state !== 'reconnecting') this.voice.state = 'starting';
+        } else if (this.voice.state !== 'error' && this.voice.state !== 'reconnecting') {
           this.voice.state = this.listening ? 'starting' : this.settings.features.voice ? 'muted' : 'off';
         }
         break;
       case 'interim':
+        // Display only. An interim transcript is never parsed or executed.
+        if (!this.listening) break;
         this.voice.interim = ev.text;
         if (this.settings.voice.mode === 'push' && this.listening) this.pushUntil = t + PUSH_TO_TALK_MS;
         break;
       case 'final':
         this.voice.interim = '';
+        // Heard after listening was switched off: stale, so it is dropped.
+        if (!this.listening || !ev.text.trim()) break;
+        if (resultKey !== undefined) {
+          if (this.handledResults.has(resultKey)) break;
+          this.handledResults.add(resultKey);
+          if (this.handledResults.size > 200) this.handledResults.delete(this.handledResults.values().next().value as string);
+        }
         this.onFinal(ev.alternatives.length > 0 ? ev.alternatives : [ev.text], ev.confidence, t, resultKey);
         break;
       case 'error': {
@@ -1120,12 +1183,19 @@ export class HandsfreeCore {
         if (!known) break;
         this.voice.error = known.message;
         this.voice.recovery = known.recovery;
-        this.voice.state = 'error';
+        // Not fatal: the recogniser restarts by itself, and until it does nothing is being heard.
+        this.voice.state = known.fatal ? 'error' : 'reconnecting';
         if (ev.code === 'unsupported') this.voice.supported = false;
         if (known.fatal) {
           this.voiceFatal = true;
+          this.dictation.stop();
           this.syncListening(t);
           this.voice.state = 'error';
+          // Nobody can say "start" without a microphone. With a camera mode there is still a cursor to use.
+          if (this.safety.awaitingStart && this.settings.controlMode !== 'voice') {
+            this.safety.resume(t);
+            this.say('The microphone is not available, so Handsfree started without waiting for "start".', 'warn');
+          }
         }
         break;
       }
@@ -1157,10 +1227,14 @@ export class HandsfreeCore {
     this.voice.lastPhrase = text;
     this.voice.lastConfidence = confidence !== null && confidence > 0 ? confidence : null;
     this.voice.lastIntent = null;
+    this.voice.lastPayload = '';
+    this.voice.lastNote = '';
 
     switch (result.status) {
       case 'match': {
         this.voice.lastIntent = ACTIONS[result.action].label;
+        const { text: payload, number, key } = result.params;
+        this.voice.lastPayload = payload ?? (number !== undefined ? String(number) : (key ?? ''));
         const outcome = this.execute(result.action, result.params, 'voice', t);
         this.voice.lastStatus = outcome.status;
         this.voice.lastMessage = outcome.message;
@@ -1169,13 +1243,24 @@ export class HandsfreeCore {
           this.say(outcome.message, 'warn');
         } else {
           this.stats.executedCommands += 1;
+          if (outcome.status === 'executed') {
+            const label = ACTIONS[result.action].label;
+            this.voice.lastExecuted = this.voice.lastPayload ? `${label}: ${this.voice.lastPayload}` : label;
+          }
           if (outcome.message) this.say(outcome.message, 'ok');
         }
         break;
       }
       case 'unknown': {
         if (this.dictation.active) {
-          const segment = this.dictation.accept(text, resultKey);
+          // Typing is an action like any other: nothing is inserted unless actions are enabled.
+          if (!this.safety.cursorLive) {
+            this.voice.lastStatus = 'blocked';
+            this.voice.lastMessage = 'Not typed: actions are paused.';
+            break;
+          }
+          // A phrase that is an email address from start to finish is typed as the address.
+          const segment = this.dictation.accept(tidySpokenEmail(text), resultKey);
           if (segment) {
             this.sink.page('insertText', { text: segment.text, requestId: segment.id });
             this.voice.lastStatus = 'dictated';

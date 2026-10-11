@@ -82,14 +82,56 @@ export const VOICE_COMMANDS: VoiceCommand[] = [
   cmd('Navigation', 'scroll_auto_down', 'keep scrolling', ['auto scroll', 'autoscroll', 'keep scrolling down', 'start scrolling']),
   cmd('Navigation', 'scroll_auto_up', 'keep scrolling up', ['auto scroll up', 'start scrolling up']),
   cmd('Navigation', 'scroll_stop', 'stop scrolling', ['stop scroll', 'stop auto scroll']),
-  cmd('Navigation', 'new_tab', 'open new tab', ['new tab', 'open a new tab', 'open tab', 'go home', 'home']),
+  cmd('Navigation', 'new_tab', 'open new tab', ['new tab', 'open a new tab', 'open tab', 'open another tab', 'create new tab', 'add tab', 'add a tab', 'go home', 'home']),
   cmd('Navigation', 'duplicate_tab', 'duplicate tab', ['duplicate this tab', 'copy tab']),
-  cmd('Navigation', 'close_tab', 'close tab', ['close this tab', 'close the tab']),
-  cmd('Navigation', 'next_tab', 'switch tab', ['next tab', 'switch tabs', 'switch to next tab']),
-  cmd('Navigation', 'prev_tab', 'previous tab', ['last tab', 'switch to previous tab']),
+  cmd('Navigation', 'close_tab', 'close tab', ['close this tab', 'close the tab', 'close current tab', 'close the current tab']),
+  cmd('Navigation', 'next_tab', 'switch tab', [
+    'next tab',
+    'switch tabs',
+    'switch to next tab',
+    'switch to the next tab',
+    'go to next tab',
+    'go to the next tab',
+    'move to next tab',
+    'move to the next tab',
+    'change tab',
+    'change tabs',
+    'change the tab',
+    'switch the tab',
+    'other tab',
+    'the other tab',
+    'another tab',
+    'tab right',
+  ]),
+  cmd('Navigation', 'prev_tab', 'previous tab', [
+    'last tab',
+    'switch to previous tab',
+    'switch to the previous tab',
+    'go to previous tab',
+    'go to the previous tab',
+    'move to previous tab',
+    'move to the previous tab',
+    'tab left',
+    'back a tab',
+  ]),
   cmd('Navigation', 'zoom_in', 'zoom in', ['bigger', 'make it bigger']),
   cmd('Navigation', 'zoom_out', 'zoom out', ['smaller', 'make it smaller']),
   cmd('Navigation', 'zoom_reset', 'reset zoom', ['normal size', 'actual size']),
+  cmd('Navigation', 'browser_settings', 'open browser settings', [
+    'browser settings',
+    'open chrome settings',
+    'chrome settings',
+    'show browser settings',
+  ]),
+  cmd('Navigation', 'incognito_window', 'open incognito window', [
+    'incognito window',
+    'new incognito window',
+    'open an incognito window',
+    'open incognito',
+    'incognito',
+    'open private window',
+    'private window',
+  ]),
 
   // ---- Pointer ----
   cmd('Pointer', 'click', 'click', ['click here', 'click that', 'select', 'tap']),
@@ -136,8 +178,20 @@ export const VOICE_COMMANDS: VoiceCommand[] = [
   // ---- Text entry ----
   cmd('Text entry', 'press_key', 'next field', ['next box', 'next input'], { id: 'next_field', params: { key: 'Tab' } }),
   cmd('Text entry', 'press_key', 'previous field', ['previous box', 'last field'], { id: 'previous_field', params: { key: 'ShiftTab' } }),
-  cmd('Text entry', 'start_dictation', 'start dictation', ['dictate', 'begin dictation', 'start typing', 'dictation on']),
-  cmd('Text entry', 'stop_dictation', 'stop dictation', ['end dictation', 'stop typing', 'dictation off', 'finish dictation'], {
+  cmd('Text entry', 'start_dictation', 'start dictation', [
+    'dictate',
+    // Chrome often drops the first word and returns just "dictation".
+    'dictation',
+    'dictation mode',
+    'begin dictation',
+    'start dictating',
+    'start typing',
+    'dictation on',
+    'voice typing',
+    'start voice typing',
+    'type what i say',
+  ]),
+  cmd('Text entry', 'stop_dictation', 'stop dictation', ['end dictation', 'stop typing', 'dictation off', 'finish dictation', 'stop dictating', 'stop voice typing', 'done typing'], {
     inDictation: true,
   }),
   cmd('Text entry', 'undo_dictation', 'undo that', ['scratch that', 'delete that', 'remove that'], { inDictation: true }),
@@ -146,10 +200,15 @@ export const VOICE_COMMANDS: VoiceCommand[] = [
   }),
 
   // ---- System ----
-  cmd('System', 'pause', 'pause handsfree', ['pause', 'stop', 'freeze', 'stop handsfree', 'hold on'], {
+  // Pausing errs on the safe side, so a near miss still pauses. "stop" is the same pause, said in a hurry:
+  // both lock every browsing action and leave the microphone on so that "start" still works.
+  cmd('System', 'pause', 'pause handsfree', ['pause', 'stop', 'freeze', 'stop handsfree', 'hold on', 'stop browsing', 'stop actions', 'emergency stop'], {
     inDictation: true,
   }),
-  cmd('System', 'resume', 'resume handsfree', ['resume', 'continue', 'unpause', 'carry on']),
+  // Starting is the opposite: it unlocks everything, so it must be heard exactly.
+  cmd('System', 'resume', 'resume handsfree', ['resume', 'start', 'lets start', 'start handsfree', 'start browsing', 'continue', 'unpause', 'carry on'], {
+    fuzzy: false,
+  }),
   cmd('System', 'stop_listening', 'stop listening', ['mute', 'stop voice', 'go to sleep'], { inDictation: true }),
   cmd('System', 'show_help', 'what can i say', ['help', 'show commands', 'show help', 'show command list', 'commands', 'help me']),
   cmd('System', 'hide_help', 'hide help', ['close help', 'hide commands', 'close commands']),
@@ -169,7 +228,9 @@ export const PARAMETER_COMMANDS: Array<{
   { group: 'Navigation', canonical: 'open <site>', example: 'open youtube', description: 'Open a site in a new tab' },
   { group: 'Navigation', canonical: 'go to <site>', example: 'go to wikipedia dot org', description: 'Load a site in this tab' },
   { group: 'Navigation', canonical: 'switch to tab <number>', example: 'switch to tab 3', description: 'Activate a tab by position' },
-  { group: 'Navigation', canonical: 'search for <words>', example: 'search for train times', description: 'Search the web in a new tab' },
+  { group: 'Navigation', canonical: 'search for <words>', example: 'search for train times', description: 'Search the web in this tab' },
+  { group: 'Navigation', canonical: 'open tab and search <words>', example: 'open tab and search train times', description: 'Search the web in a new tab' },
+  { group: 'Navigation', canonical: 'search this tab for <words>', example: 'search this tab for react', description: "Use this page's own search box, or search the web in this tab" },
   { group: 'Text entry', canonical: 'type <words>', example: 'type hello world', description: 'Type into the focused field once' },
   { group: 'Text entry', canonical: 'press <key>', example: 'press enter', description: 'Enter, tab, escape, space, backspace or an arrow key' },
 ];
@@ -210,9 +271,9 @@ export const PHRASE_INDEX: Map<string, VoiceCommand> = (() => {
 export const HELP_SECTIONS: Array<{ title: string; phrases: string[] }> = [
   { title: 'Click', phrases: ['click', 'show numbers', 'click 7', 'click sign in', 'double click', 'right click'] },
   { title: 'Move around', phrases: ['scroll down', 'scroll up', 'keep scrolling', 'stop scrolling', 'scroll to top'] },
-  { title: 'Sites and tabs', phrases: ['open youtube', 'go to wikipedia', 'search for cats', 'go back', 'open new tab', 'switch tab', 'close tab'] },
+  { title: 'Sites and tabs', phrases: ['open youtube', 'go to wikipedia', 'search for cats', 'open tab and search cats', 'go back', 'open new tab', 'switch tab', 'close tab'] },
   { title: 'Type', phrases: ['show fields', 'start dictation', 'stop dictation', 'undo that', 'type hello', 'press enter'] },
   { title: 'Video', phrases: ['play video', 'pause video', 'mute video'] },
   { title: 'Modes', phrases: ['use head control', 'use hand control', 'use voice mode', 'recalibrate', 'recenter'] },
-  { title: 'Stop', phrases: ['stop', 'resume', 'stop listening', 'turn off handsfree', 'hide help'] },
+  { title: 'Start and stop', phrases: ['start', 'pause', 'stop', 'resume', 'stop listening', 'turn off handsfree', 'hide help'] },
 ];

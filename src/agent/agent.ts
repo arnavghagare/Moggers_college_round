@@ -93,6 +93,7 @@ export class PageAgent {
   private pendingClick: PendingClick | null = null;
   private clickSeq = 0;
   private pickerSelect: HTMLSelectElement | null = null;
+  private startAttempt = 0;
 
   constructor(private readonly options: AgentOptions) {}
 
@@ -101,12 +102,14 @@ export class PageAgent {
   async start(): Promise<void> {
     if (this.running) return;
     this.running = true;
+    // A quick off-and-on can leave an earlier start() still waiting below; only the latest may mount.
+    const attempt = ++this.startAttempt;
     try {
       this.settings = await loadSettings();
     } catch {
       this.settings = DEFAULT_SETTINGS;
     }
-    if (!this.running) return;
+    if (!this.running || attempt !== this.startAttempt) return;
 
     this.overlay = new Overlay({
       onConfirm: (ok) => {

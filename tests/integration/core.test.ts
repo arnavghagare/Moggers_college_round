@@ -5,6 +5,7 @@ import type { HandObservation } from '../../src/core/hand/features';
 import type { BrowserCommand, PageAction, PageActionParams } from '../../src/shared/messages';
 import { DEFAULT_SETTINGS, applyPatch, type DeepPartial, type Settings } from '../../src/shared/settings';
 import { CALIBRATION_STEPS } from '../../src/core/calibration';
+import { AWAITING_START } from '../../src/shared/types';
 import { POSES, TEST_ASPECT, makeFace } from '../helpers/synthetic';
 
 const FRAME = 33;
@@ -25,7 +26,8 @@ class Harness {
   exited = 0;
   private resultSeq = 0;
 
-  constructor(patch: DeepPartial<Settings> = {}) {
+  /** @param said whether the user has already said "start". Most tests are about what happens after that. */
+  constructor(patch: DeepPartial<Settings> = {}, said: { start: boolean } = { start: true }) {
     // Head steering plus hand gestures is an opt-in combination; most tests here use it.
     this.settings = applyPatch(applyPatch(DEFAULT_SETTINGS, { features: { handGestures: true } }), patch);
     const sink: CoreSink = {
@@ -49,6 +51,7 @@ class Harness {
     };
     this.core = new HandsfreeCore(this.settings, sink);
     this.core.ready(this.t);
+    if (said.start) this.core.execute('resume', {}, 'ui', this.t);
   }
 
   configure(patch: DeepPartial<Settings>): void {
@@ -743,7 +746,8 @@ describe('listening control', () => {
   it('reports recogniser errors with recovery guidance and stops on fatal ones', () => {
     h.activate();
     h.core.speechEvent({ kind: 'error', code: 'network' }, h.t);
-    expect(h.status().voice.state).toBe('error');
+    // Not fatal: the recogniser restarts by itself, so this is "reconnecting", not a dead microphone.
+    expect(h.status().voice.state).toBe('reconnecting');
     expect(h.status().voice.recovery).toMatch(/internet/);
     expect(h.core.isListening).toBe(true);
     h.core.speechEvent({ kind: 'error', code: 'not-allowed' }, h.t);
@@ -1169,5 +1173,379 @@ describe('the three modes are separate by default', () => {
   it('ships with hand gestures off outside hand mode', () => {
     expect(DEFAULT_SETTINGS.features.handGestures).toBe(false);
     expect(DEFAULT_SETTINGS.controlMode).toBe('head');
+  });
+});
+
+describe('switching to voice mode while running', () => {
+  it('drops the cursor source as soon as the mode changes, without waiting for a camera frame', () => {
+    const x = new Harness({ controlMode: 'hand' });
+    x.run(x.settings.safety.graceMs + 200, undefined, [POSES.point({ x: 0.5, y: 0.5 })]);
+    expect(x.core.cursorSource).toBe('hand');
+    x.configure({ controlMode: 'voice' });
+    x.core.tick((x.t += 100));
+    expect(x.core.cursorSource).toBe('none');
+    expect(x.core.hud(x.t, { cameraOn: false, fps: 0 }).tracking).toBe('off');
+  });
+});
+
+describe('listening and acting are separate states', () => {
+  /** Voice on, and the user has not said "start" yet. */
+  const fresh = (patch: DeepPartial<Settings> = {}): Harness => new Harness(patch, { start: false });
+  const listening = (x: Harness): void => x.core.speechEvent({ kind: 'state', state: 'listening' }, x.t);
+
+  it('starts listening with actions paused', () => {
+    const x = fresh();
+    listening(x);
+    x.run(x.settings.safety.graceMs + 1000, makeFace());
+    expect(x.core.isListening).toBe(true);
+    expect(x.status().voice.state).toBe('listening');
+    expect(x.core.phase).toBe('paused');
+    expect(x.status().pausedReason).toBe(AWAITING_START);
+    // The cursor may not activate anything either.
+    expect(x.cursor.ok).toBe(false);
+  });
+
+  it('hears an ordinary command while paused, shows it, and does nothing', () => {
+    const x = fresh();
+    x.run(500, makeFace());
+    // Start-up releases anything held; from here on, nothing at all may be sent.
+    x.page = [];
+    for (const phrase of ['open youtube', 'click', 'scroll down', 'open tab and search cats', 'go back']) x.say(phrase);
+    expect(x.actions()).toEqual([]);
+    expect(x.browser).toEqual([]);
+    expect(x.status().voice.lastPhrase).toBe('go back');
+    expect(x.status().voice.lastStatus).toBe('blocked');
+    expect(x.status().voice.lastMessage).toMatch(/Say "start"/);
+  });
+
+  it('"start" activates browsing, and commands then run', () => {
+    const x = fresh();
+    x.run(500, makeFace());
+    x.say('start');
+    expect(x.core.phase).toBe('grace');
+    x.run(x.settings.safety.graceMs + 300, makeFace());
+    expect(x.core.phase).toBe('active');
+    x.page = [];
+    x.say('scroll down');
+    expect(x.actions()).toEqual(['scrollBy']);
+  });
+
+  it('"resume" works the same as "start"', () => {
+    const x = fresh();
+    x.run(500, makeFace());
+    x.say('resume');
+    x.run(x.settings.safety.graceMs + 300, makeFace());
+    expect(x.core.phase).toBe('active');
+  });
+
+  it('a word that only sounds like "start" does not activate anything', () => {
+    const x = fresh();
+    x.run(500, makeFace());
+    for (const near of ['star', 'smart', 'started', 'restart', 'start dictation', '']) x.say(near);
+    expect(x.core.phase).toBe('paused');
+  });
+
+  it('"pause" locks actions at once and keeps listening for "start"', () => {
+    h.activate();
+    h.say('pause');
+    expect(h.core.phase).toBe('paused');
+    expect(h.core.isListening).toBe(true);
+    h.page = [];
+    h.say('open youtube');
+    h.say('scroll down');
+    h.say('click');
+    expect(h.actions()).toEqual([]);
+    expect(h.browser).toEqual([]);
+    h.say('start');
+    h.run(h.settings.safety.graceMs + 300, makeFace());
+    expect(h.core.phase).toBe('active');
+    h.say('open youtube');
+    expect(h.browser).toEqual([{ cmd: 'openUrl', text: 'https://www.youtube.com/' }]);
+  });
+
+  it('does not replay what was said while paused once resumed', () => {
+    h.activate();
+    h.say('pause');
+    h.page = [];
+    h.say('scroll down');
+    h.say('open youtube');
+    h.say('resume');
+    h.run(h.settings.safety.graceMs + 2000, makeFace());
+    expect(h.actions()).toEqual([]);
+    expect(h.browser).toEqual([]);
+  });
+
+  it('"stop" pauses too, and the microphone stays on', () => {
+    h.activate();
+    h.say('stop');
+    expect(h.core.phase).toBe('paused');
+    expect(h.core.isListening).toBe(true);
+  });
+
+  it('"stop listening" turns recognition off, and it is not reported as listening', () => {
+    h.activate();
+    listening(h);
+    h.say('stop listening');
+    expect(h.core.isListening).toBe(false);
+    expect(h.listening.slice(-1)).toEqual([false]);
+    h.core.speechEvent({ kind: 'state', state: 'stopped' }, h.t);
+    expect(h.status().voice.state).toBe('muted');
+    expect(h.core.hud(h.t, { cameraOn: true, fps: 30 }).listening).toBe(false);
+    // Nothing turns it back on by itself.
+    h.run(20000, makeFace());
+    expect(h.core.isListening).toBe(false);
+    expect(h.listening.filter(Boolean)).toHaveLength(1);
+  });
+
+  it('drops speech that arrives after listening was switched off', () => {
+    h.activate();
+    h.say('stop listening');
+    h.page = [];
+    h.say('scroll down');
+    h.core.speechEvent({ kind: 'interim', text: 'scroll' }, h.t);
+    expect(h.actions()).toEqual([]);
+    expect(h.status().voice.interim).toBe('');
+    expect(h.status().voice.lastPhrase).toBe('stop listening');
+  });
+
+  it('runs a recognition result once, however often it is delivered', () => {
+    h.activate();
+    for (let i = 0; i < 4; i++) h.core.speechEvent({ kind: 'final', text: 'scroll down', confidence: 0.9, alternatives: ['scroll down'] }, h.t, 'session7:3');
+    expect(h.actions()).toEqual(['scrollBy']);
+    // The same words in a new result are a new command.
+    h.core.speechEvent({ kind: 'final', text: 'scroll down', confidence: 0.9, alternatives: ['scroll down'] }, h.t, 'session7:4');
+    expect(h.actions()).toEqual(['scrollBy', 'scrollBy']);
+  });
+
+  it('never acts on an interim transcript or an empty result', () => {
+    h.activate();
+    h.core.speechEvent({ kind: 'interim', text: 'open youtube' }, h.t);
+    h.core.speechEvent({ kind: 'final', text: '   ', confidence: 0.9, alternatives: ['   '] }, h.t, 'k:1');
+    expect(h.actions()).toEqual([]);
+    expect(h.browser).toEqual([]);
+    expect(h.status().voice.interim).toBe('');
+  });
+
+  it('keeps the active state across a recognition restart', () => {
+    h.activate();
+    listening(h);
+    h.core.speechEvent({ kind: 'state', state: 'starting' }, h.t);
+    expect(h.status().voice.state).toBe('starting');
+    expect(h.core.phase).toBe('active');
+    listening(h);
+    h.say('scroll down');
+    expect(h.actions()).toEqual(['scrollBy']);
+  });
+
+  it('keeps the paused state across a recognition restart and a tracking restart', () => {
+    h.activate();
+    h.say('pause');
+    h.core.speechEvent({ kind: 'error', code: 'network' }, h.t);
+    expect(h.status().voice.state).toBe('reconnecting');
+    listening(h);
+    // The camera restarting (a mode switch does this) must not un-pause.
+    h.core.setLoading();
+    h.core.ready(h.t);
+    h.run(h.settings.safety.graceMs + 500, makeFace());
+    expect(h.core.phase).toBe('paused');
+    h.page = [];
+    h.say('scroll down');
+    expect(h.actions()).toEqual([]);
+  });
+
+  it('reports a blocked microphone and does not pretend to listen', () => {
+    const x = fresh({ controlMode: 'voice' });
+    x.core.speechEvent({ kind: 'error', code: 'not-allowed' }, x.t);
+    expect(x.core.isListening).toBe(false);
+    expect(x.status().voice.state).toBe('error');
+    expect(x.status().voice.error).toMatch(/blocked/);
+    expect(x.status().voice.recovery).toBeTruthy();
+    // Voice mode has no other input: it stays paused rather than start by itself.
+    expect(x.core.phase).toBe('paused');
+  });
+
+  it('with a camera mode and no usable microphone, does not leave the user locked out', () => {
+    const x = fresh();
+    x.run(300, makeFace());
+    expect(x.core.phase).toBe('paused');
+    x.core.speechEvent({ kind: 'error', code: 'audio-capture' }, x.t);
+    x.run(x.settings.safety.graceMs + 300, makeFace());
+    expect(x.core.phase).toBe('active');
+  });
+
+  it('with voice switched off there is nothing to wait for', () => {
+    const x = fresh({ features: { voice: false } });
+    x.run(x.settings.safety.graceMs + 700, makeFace());
+    expect(x.core.phase).toBe('active');
+  });
+
+  it('survives rapid pause and resume without acting in between', () => {
+    h.activate();
+    for (let i = 0; i < 12; i++) h.say(i % 2 === 0 ? 'pause' : 'resume');
+    // Twelve toggles end resumed, and every resume re-enters the grace period.
+    expect(h.core.phase).toBe('grace');
+    expect(h.core.execute('click', {}, 'voice', h.t).status).toBe('blocked');
+    expect(h.listening.filter(Boolean)).toHaveLength(1);
+  });
+
+  it('the Start button and the keyboard shortcut activate as well', () => {
+    const x = fresh();
+    x.run(300, makeFace());
+    expect(x.core.execute('toggle_pause', {}, 'keyboard', x.t).status).toBe('executed');
+    expect(x.core.phase).toBe('grace');
+  });
+});
+
+describe('right after "start"', () => {
+  it('a spoken command runs at once, without waiting out the warm-up', () => {
+    const x = new Harness({}, { start: false });
+    x.run(500, makeFace());
+    x.page = [];
+    x.say('start');
+    expect(x.core.phase).toBe('grace');
+    x.say('scroll down');
+    x.say('open youtube');
+    x.say('go to tab 2');
+    expect(x.actions()).toEqual(['scrollBy']);
+    expect(x.browser).toEqual([
+      { cmd: 'openUrl', text: 'https://www.youtube.com/' },
+      { cmd: 'switchTab', number: 2 },
+    ]);
+  });
+
+  it('a click at the cursor still waits, because the cursor has not settled', () => {
+    h.activate();
+    h.say('pause');
+    h.say('resume');
+    h.page = [];
+    h.say('click');
+    expect(h.actions()).toEqual([]);
+    expect(h.status().voice.lastStatus).toBe('blocked');
+  });
+
+  it('a gesture still waits out the warm-up', () => {
+    h.activate();
+    h.say('pause');
+    h.say('resume');
+    h.page = [];
+    h.run(400, makeFace(), [POSES.open()]);
+    h.run(200, makeFace(), [POSES.pinch()]);
+    h.run(300, makeFace(), [POSES.open()]);
+    expect(h.actions().filter((a) => a === 'click')).toEqual([]);
+  });
+
+  it('dictation can begin straight away, and "dictation" alone starts it', () => {
+    h.activate();
+    h.say('pause');
+    h.say('start');
+    h.page = [];
+    h.say('dictation');
+    expect(h.status().voice.dictating).toBe(true);
+    h.say('hello this is a test');
+    h.say('Arnav 14 Ghagare@gmail.com');
+    expect(h.page.filter((p) => p.action === 'insertText').map((p) => p.params?.text)).toEqual(['hello this is a test', 'arnav14ghagare@gmail.com']);
+    h.say('stop dictation');
+    expect(h.status().voice.dictating).toBe(false);
+  });
+});
+
+describe('pause covers every way of acting', () => {
+  it('ends dictation and types nothing more', () => {
+    h.activate();
+    h.say('start dictation');
+    h.say('hello there');
+    expect(h.actions()).toEqual(['insertText']);
+    h.say('pause');
+    expect(h.status().voice.dictating).toBe(false);
+    h.page = [];
+    h.say('this must not be typed');
+    expect(h.actions()).toEqual([]);
+    // Resuming does not silently go back to typing.
+    h.say('resume');
+    h.run(h.settings.safety.graceMs + 300, makeFace());
+    h.say('nor this');
+    expect(h.actions()).toEqual([]);
+    expect(h.status().voice.dictating).toBe(false);
+  });
+
+  it('dictated sentences are typed, not run as commands', () => {
+    h.activate();
+    h.say('start dictation');
+    h.page = [];
+    h.say('open youtube and search for cats');
+    h.say('go back');
+    expect(h.browser).toEqual([]);
+    expect(h.page.filter((p) => p.action === 'insertText').map((p) => p.params?.text)).toEqual(['open youtube and search for cats', 'go back']);
+    h.say('stop dictation');
+    expect(h.status().voice.dictating).toBe(false);
+    expect(h.core.phase).toBe('active');
+  });
+
+  it('a gesture cannot act while paused, and a held one is released', () => {
+    h.activate();
+    h.run(300, makeFace(), [POSES.open()]);
+    h.run(900, makeFace(), [POSES.pinch()]);
+    expect(h.status().cursor.dragging).toBe(true);
+    h.say('pause');
+    expect(h.status().cursor.dragging).toBe(false);
+    h.page = [];
+    h.run(300, makeFace(), [POSES.open()]);
+    h.run(200, makeFace(), [POSES.pinch()]);
+    h.run(300, makeFace(), [POSES.open()]);
+    expect(h.actions().filter((a) => a === 'click' || a === 'dragStart')).toEqual([]);
+  });
+});
+
+describe('search and browser commands', () => {
+  beforeEach(() => {
+    h.activate();
+  });
+
+  it('opens a new tab with only the query for "open tab and search <email>"', () => {
+    h.say('Open tab and search arnav14ghagare@gmail.com');
+    expect(h.browser).toEqual([{ cmd: 'search', text: 'arnav14ghagare@gmail.com' }]);
+    expect(h.status().voice.lastIntent).toBe('Open a new tab and search');
+    expect(h.status().voice.lastPayload).toBe('arnav14ghagare@gmail.com');
+    expect(h.status().voice.lastExecuted).toBe('Open a new tab and search: arnav14ghagare@gmail.com');
+  });
+
+  it('searches in the current tab unless a new one was asked for', () => {
+    h.say('Search for accessibility tools.');
+    h.say('Search this tab for React tutorials.');
+    expect(h.browser).toEqual([
+      { cmd: 'searchTab', text: 'accessibility tools' },
+      { cmd: 'searchPage', text: 'React tutorials' },
+    ]);
+  });
+
+  it('asks for the words when a search has none', () => {
+    h.say('open tab and search');
+    expect(h.browser).toEqual([]);
+    expect(h.status().voice.lastStatus).toBe('rejected');
+  });
+
+  it('opens browser settings and an incognito window through the browser', () => {
+    h.say('open browser settings');
+    h.say('open incognito window');
+    expect(h.browser).toEqual([{ cmd: 'openSettings' }, { cmd: 'incognito' }]);
+  });
+
+  it('passes on what the browser said when a command could not be carried out', () => {
+    h.core.notify('Chrome did not allow an incognito window to be opened here.', h.t);
+    expect(h.last('toast')?.params?.text).toMatch(/incognito/);
+    expect(h.status().voice.lastNote).toMatch(/incognito/);
+  });
+});
+
+describe('hand reach changes', () => {
+  it('glides to the new position instead of jumping when the reach is recalibrated', () => {
+    const x = new Harness({ controlMode: 'hand' });
+    x.run(x.settings.safety.graceMs + 600, undefined, [POSES.point({ x: 0.5, y: 0.55 })]);
+    const before = { ...x.cursor };
+    x.configure({ cursor: { handCenterX: 0.3, handCenterY: 0.35 } });
+    x.run(66, undefined, [POSES.point({ x: 0.5, y: 0.55 })]);
+    expect(Math.hypot(x.cursor.x - before.x, x.cursor.y - before.y)).toBeLessThan(0.15);
+    x.run(1500, undefined, [POSES.point({ x: 0.5, y: 0.55 })]);
+    expect(x.cursor.x).toBeGreaterThan(before.x + 0.2);
   });
 });

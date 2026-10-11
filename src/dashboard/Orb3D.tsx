@@ -32,15 +32,15 @@ export function Orb3D({ size = 320, interactive = true, className = '' }: OrbPro
     canvas.width = size * dpr;
     canvas.height = size * dpr;
 
-    const handlePointerMove = (e: MouseEvent) => {
-      if (!interactive) return;
-      const rect = canvas.getBoundingClientRect();
-      state.current.targetMouseX = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-      state.current.targetMouseY = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
-    };
+    // The orb is decoration. The tracking models share this machine's GPU, so it draws
+    // at half the display rate, and not at all while it is off screen or the tab is hidden.
+    const FRAME_MS = 1000 / 30;
+    const stillOnly = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    let onScreen = true;
+    let lastPaint = 0;
 
     const handleGlobalMove = (e: MouseEvent) => {
-      if (!interactive) return;
+      if (!interactive || !onScreen) return;
       const rect = canvas.getBoundingClientRect();
       const cx = rect.left + rect.width / 2;
       const cy = rect.top + rect.height / 2;
@@ -50,17 +50,24 @@ export function Orb3D({ size = 320, interactive = true, className = '' }: OrbPro
       state.current.targetMouseY = 0.5 + dy * 0.35;
     };
 
-    window.addEventListener('mousemove', handleGlobalMove, { passive: true });
-    canvas.addEventListener('mousemove', handlePointerMove, { passive: true });
+    if (!stillOnly) window.addEventListener('mousemove', handleGlobalMove, { passive: true });
 
-    const render = () => {
+    const render = (now = 0) => {
+      animId = 0;
+      if (!stillOnly) {
+        if (!onScreen || document.hidden) return;
+        animId = requestAnimationFrame(render);
+        if (now - lastPaint < FRAME_MS - 2) return;
+        lastPaint = now;
+      }
       const s = state.current;
-      s.time += 0.015;
-      s.rotation += 0.008;
+      // Twice the old per-frame step, because it now paints half as often.
+      s.time += 0.03;
+      s.rotation += 0.016;
 
       // Smooth lerp mouse coordinates
-      s.mouseX += (s.targetMouseX - s.mouseX) * 0.06;
-      s.mouseY += (s.targetMouseY - s.mouseY) * 0.06;
+      s.mouseX += (s.targetMouseX - s.mouseX) * 0.12;
+      s.mouseY += (s.targetMouseY - s.mouseY) * 0.12;
 
       const w = canvas.width;
       const h = canvas.height;
@@ -243,16 +250,25 @@ export function Orb3D({ size = 320, interactive = true, className = '' }: OrbPro
         ctx.fill();
       }
       ctx.restore();
-
-      animId = requestAnimationFrame(render);
     };
+
+    const wake = (): void => {
+      if (!stillOnly && !animId && onScreen && !document.hidden) animId = requestAnimationFrame(render);
+    };
+    const watcher = new IntersectionObserver(([entry]) => {
+      onScreen = entry?.isIntersecting ?? true;
+      wake();
+    });
+    watcher.observe(canvas);
+    document.addEventListener('visibilitychange', wake);
 
     render();
 
     return () => {
-      cancelAnimationFrame(animId);
+      if (animId) cancelAnimationFrame(animId);
+      watcher.disconnect();
+      document.removeEventListener('visibilitychange', wake);
       window.removeEventListener('mousemove', handleGlobalMove);
-      canvas.removeEventListener('mousemove', handlePointerMove);
     };
   }, [size, interactive]);
 
@@ -273,7 +289,11 @@ export function Orb3D({ size = 320, interactive = true, className = '' }: OrbPro
         style={{
           width: size,
           height: size,
-          pointerEvents: interactive ? 'auto' : 'none',
+          // Decoration only: it must never take a click meant for something else.
+          pointerEvents: 'none',
+          // The glow reaches past the canvas; fade it out instead of cutting it off square.
+          maskImage: 'radial-gradient(circle closest-side, #000 76%, transparent 100%)',
+          WebkitMaskImage: 'radial-gradient(circle closest-side, #000 76%, transparent 100%)',
         }}
       />
     </div>

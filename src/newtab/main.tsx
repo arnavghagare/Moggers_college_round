@@ -4,6 +4,7 @@ import { resolveSite } from '../core/voice/sites';
 import { Chip, Ticker } from '../dashboard/components';
 import { EngineProvider, useAppearance, useEngine } from '../dashboard/engine';
 import { currentMode } from '../dashboard/modes';
+import { Orb3D } from '../dashboard/Orb3D';
 import '../dashboard/styles.css';
 
 /**
@@ -29,6 +30,7 @@ function NewTab() {
   useAppearance(settings);
   const [query, setQuery] = useState('');
   const mode = currentMode(settings.controlMode);
+  const phase = status?.phase;
 
   const go = (e: FormEvent): void => {
     e.preventDefault();
@@ -44,9 +46,13 @@ function NewTab() {
       <Ticker />
       <main className="newtab" style={{ '--mode': mode.color } as CSSProperties}>
         <div className="newtab-inner">
-          <h1>
-            Where to, <span className="hl">no hands?</span>
-          </h1>
+          <Orb3D size={200} interactive={true} />
+          <div>
+            <span className="eyebrow">HANDSFREE PORTAL</span>
+            <h1>
+              Where to, <span className="serif-accent hl">Hands-Free?</span>
+            </h1>
+          </div>
           <form className="search" role="search" onSubmit={go}>
             <input
               type="search"
@@ -71,7 +77,17 @@ function NewTab() {
             ))}
           </nav>
           <div className="row" style={{ justifyContent: 'center' }}>
-            <Chip tone={enabled ? (status?.phase === 'active' ? 'ok' : 'warn') : ''}>{enabled ? `${mode.name} ${status?.phase === 'active' ? 'live' : 'starting'}` : 'Handsfree is off'}</Chip>
+            <Chip tone={!enabled ? '' : phase === 'active' ? 'ok' : phase === 'error' ? 'bad' : 'warn'}>
+              {!enabled
+                ? 'Handsfree is off'
+                : phase === 'active'
+                  ? `${mode.name} live`
+                  : phase === 'paused' || phase === 'suspended'
+                    ? 'Paused: say "resume"'
+                    : phase === 'error'
+                      ? 'Stopped: open the dashboard'
+                      : `${mode.name} starting`}
+            </Chip>
             {enabled ? (
               <>
                 <span className="say">say "open youtube"</span>

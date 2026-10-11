@@ -199,7 +199,7 @@ async function onboard(scenario, context, extensionId, modeName) {
 
   try {
     await page.screenshot({ path: join(shots, `${scenario}-welcome-1.png`) });
-    await page.getByRole('button', { name: "Let's go" }).click();
+    await page.getByRole('button', { name: 'Get Started' }).click();
     const pick = page.getByRole('button', { name: `Pick ${modeName}` });
     if (await pick.isVisible().catch(() => false)) await pick.click();
     await page.screenshot({ path: join(shots, `${scenario}-welcome-2.png`) });
@@ -257,6 +257,19 @@ async function runScenario(scenario, pageUrl) {
     } else {
       check(scenario, 'head mode loads only the face model', ready.models.face === 'ready' && ready.models.hand === 'off', `face=${ready.models.face} hand=${ready.models.hand}`);
     }
+
+    // Voice is on by default, so Handsfree listens but does nothing until it is told to start.
+    const waiting = await waitFor(async () => {
+      const s = await readStatus(dashboard);
+      return s?.phase === 'paused' ? s : null;
+    }, 8000);
+    check(scenario, 'starts with actions paused, waiting for "start"', /start/i.test(waiting?.pausedReason ?? ''), waiting ? `phase=${waiting.phase}, ${waiting.pausedReason}` : 'never paused');
+    await act(dashboard, 'resume');
+    const started = await waitFor(async () => {
+      const s = await readStatus(dashboard);
+      return s && (s.phase === 'grace' || s.phase === 'active') ? s : null;
+    }, 5000);
+    check(scenario, 'the Start control enables browsing', Boolean(started), started ? `phase=${started.phase}` : '');
 
     if (scenario !== 'hand') {
       // Onboarding in head mode lands on the calibration, which starts by itself.
@@ -417,6 +430,55 @@ async function runScenario(scenario, pageUrl) {
       const activeAgain = await waitFor(async () => (await readStatus(dashboard))?.phase === 'active', 8000);
       check(scenario, 'resume unlocks interaction again after the grace period', Boolean(activeAgain));
 
+      // Searching: only the query may reach the destination. Results pages are stubbed where the browser lets the test
+      // intercept them; a tab the extension opens itself may still load the real results page.
+      await context.route('https://www.google.com/**', (route) => route.fulfill({ status: 200, contentType: 'text/html', body: '<title>stub results</title>' }));
+      const isResults = (p) => p.url().startsWith('https://www.google.com/search?');
+      const email = 'arnav14ghagare@gmail.com';
+      const pagesBefore = context.pages().length;
+      await act(dashboard, 'search_new_tab', { text: email });
+      const results = await waitFor(async () => context.pages().find(isResults), 6000);
+      check(
+        scenario,
+        '"open tab and search" opens a new tab with exactly the query',
+        Boolean(results) && new URL(results.url()).searchParams.get('q') === email && context.pages().length === pagesBefore + 1,
+        results?.url() ?? 'no results tab',
+      );
+      await results?.close();
+      await page.bringToFront();
+      await waitFor(async () => (await readStatus(dashboard))?.page.controllable, 5000);
+
+      await act(dashboard, 'search_here', { text: 'React tutorials' });
+      const within = await waitFor(async () => (await page.evaluate(() => window.__searched)) === 'React tutorials', 5000);
+      check(scenario, '"search this tab" puts only the query into the page\'s own search box', Boolean(within), String(await page.evaluate(() => window.__searched)));
+
+      await act(dashboard, 'search', { text: 'accessibility tools' });
+      const sameTab = await waitFor(async () => isResults(page), 6000);
+      check(
+        scenario,
+        '"search for" searches in the current tab, without opening another',
+        Boolean(sameTab) && new URL(page.url()).searchParams.get('q') === 'accessibility tools' && context.pages().length === pagesBefore,
+        page.url(),
+      );
+      await page.goto(pageUrl);
+      await page.bringToFront();
+      await waitFor(async () => (await readStatus(dashboard))?.page.controllable, 8000);
+
+      // Browser settings: a real chrome:// page, which no extension may control.
+      await act(dashboard, 'browser_settings');
+      const settingsTab = await waitFor(async () => context.pages().find((p) => p.url().startsWith('chrome://settings')), 6000);
+      check(scenario, '"open browser settings" opens chrome://settings', Boolean(settingsTab), settingsTab?.url() ?? 'not opened');
+      if (settingsTab) {
+        const locked = await waitFor(async () => {
+          const st = await readStatus(dashboard);
+          return st && !st.page.controllable ? st : null;
+        }, 5000);
+        check(scenario, 'the settings page is reported as not controllable', Boolean(locked), (locked?.page.reason ?? '').slice(0, 60));
+        await settingsTab.close();
+      }
+      await page.bringToFront();
+      await waitFor(async () => (await readStatus(dashboard))?.page.controllable, 8000);
+
       // A brand new tab.
       const tabsBefore = context.pages().length;
       await act(dashboard, 'new_tab');
@@ -491,13 +553,32 @@ async function runScenario(scenario, pageUrl) {
       await dashboard.bringToFront();
       await sleep(2500);
       await dashboard.screenshot({ path: join(shots, 'hand-page.png') });
-      const centred = dashboard.getByRole('button', { name: 'Centre the box on my hand' });
-      if (await centred.isEnabled().catch(() => false)) {
-        await centred.click();
-        await sleep(500);
-        const stored = await worker.evaluate(async () => (await chrome.storage.local.get('hf:settings'))['hf:settings'].cursor);
-        check(scenario, '"centre the box on my hand" stores where the hand is', Math.abs(stored.handCenterX - 0.5) > 0.001 || Math.abs(stored.handCenterY - 0.55) > 0.001, `x=${stored.handCenterX.toFixed(2)} y=${stored.handCenterY.toFixed(2)}`);
-      }
+      // Reach calibration: a still photograph is a perfectly steady hand, so it must succeed and store the position.
+      const readCursor = () => worker.evaluate(async () => (await chrome.storage.local.get('hf:settings'))['hf:settings'].cursor);
+      await dashboard.getByRole('button', { name: 'Calibrate my reach' }).click();
+      const stored = await waitFor(async () => {
+        const c = await readCursor();
+        return Math.abs(c.handCenterX - 0.5) > 0.001 || Math.abs(c.handCenterY - 0.55) > 0.001 ? c : null;
+      }, 8000);
+      check(scenario, 'reach calibration measures and stores where the hand rests', Boolean(stored), stored ? `x=${stored.handCenterX.toFixed(2)} y=${stored.handCenterY.toFixed(2)}` : 'nothing stored');
+      check(scenario, 'reach calibration reports success', await dashboard.getByText('Reach calibrated').isVisible().catch(() => false));
+      await dashboard.screenshot({ path: join(shots, 'hand-reach.png') });
+      await dashboard.getByRole('button', { name: 'Reset to default' }).click();
+      const reset = await waitFor(async () => {
+        const c = await readCursor();
+        return c.handCenterX === 0.5 && c.handCenterY === 0.55 ? c : null;
+      }, 4000);
+      check(scenario, 'reach can be reset to the default', Boolean(reset));
+    }
+
+    if (scenario === 'face') {
+      // Incognito: Chrome decides whether it is allowed. Either way the user must be told what happened.
+      await act(dashboard, 'incognito_window');
+      const told = await waitFor(async () => {
+        const st = await readStatus(dashboard);
+        return /incognito/i.test(st?.voice.lastNote ?? '') ? st : null;
+      }, 6000);
+      check(scenario, '"open incognito window" reports what Chrome did', Boolean(told), (told?.voice.lastNote ?? 'no message').slice(0, 110));
     }
 
     // ---- shutdown ------------------------------------------------------------------

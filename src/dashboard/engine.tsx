@@ -17,10 +17,12 @@ export interface EngineApi {
   status: EngineStatus | null;
   settings: Settings;
   patch(patch: DeepPartial<Settings>): void;
-  enable(): Promise<void>;
-  disable(): Promise<void>;
+  /** Resolve to true when the change went through; a failure is left in `lastError`. */
+  enable(): Promise<boolean>;
+  disable(): Promise<boolean>;
   busy: boolean;
   lastError: string | null;
+  clearError(): void;
   /** A fatal error reported by the engine document itself, if it crashed. */
   engineError: string | null;
   act(action: ActionId, params?: ActionParams): void;
@@ -53,6 +55,8 @@ export function EngineProvider({ children, controllable = true }: { children: Re
   const portRef = useRef<chrome.runtime.Port | null>(null);
   const listeners = useRef(new Set<FrameListener>());
   const voiceCtl = useRef<((listen: boolean, lang: string) => void) | null>(null);
+  /** Settings writes from this page that storage has not confirmed yet. */
+  const pendingWrites = useRef(0);
 
   // ---- settings and on/off state ----
   useEffect(() => {
@@ -63,7 +67,11 @@ export function EngineProvider({ children, controllable = true }: { children: Re
       setEnabled(state?.enabled ?? runtime.enabled);
       setLoaded(true);
     });
-    const offSettings = onSettingsChanged((s) => setSettings(s));
+    // While this page is still writing, storage echoes are older than what is on screen:
+    // applying them would make a slider jump back under the pointer.
+    const offSettings = onSettingsChanged((s) => {
+      if (pendingWrites.current === 0) setSettings(s);
+    });
     const offRuntime = onRuntimeChanged((r) => setEnabled(r.enabled));
     const readError = (value: unknown): void => {
       const message = (value as { message?: unknown } | undefined)?.message;
@@ -118,6 +126,8 @@ export function EngineProvider({ children, controllable = true }: { children: Re
         void chrome.runtime.lastError;
         if (portRef.current === port) portRef.current = null;
         setConnected(false);
+        // The engine is gone: a frozen "live" status would be misleading.
+        setStatus(null);
         // The engine may still be starting: keep trying while Handsfree is on.
         if (alive) timer = setTimeout(connect, 700);
       });
@@ -164,15 +174,21 @@ export function EngineProvider({ children, controllable = true }: { children: Re
 
   // The functions are stable across renders, so effects can depend on them
   // without re-running every time a status update arrives.
-  const run = useCallback(async (request: WorkerRequest): Promise<void> => {
+  const run = useCallback(async (request: WorkerRequest): Promise<boolean> => {
     setBusy(true);
     setLastError(null);
     try {
       const response = await ask(request);
-      if (!response.ok) setLastError(response.error ?? 'Something went wrong.');
-      else if (response.enabled !== undefined) setEnabled(response.enabled);
+      if (!response.ok) {
+        setLastError(response.error ?? 'Something went wrong.');
+        return false;
+      }
+      if (response.enabled !== undefined) setEnabled(response.enabled);
+      return true;
     } catch (err) {
-      setLastError(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      setLastError(/context invalidated/i.test(message) ? 'Handsfree was reloaded. Refresh this page to carry on.' : message);
+      return false;
     } finally {
       setBusy(false);
     }
@@ -180,8 +196,21 @@ export function EngineProvider({ children, controllable = true }: { children: Re
   const patch = useCallback((change: DeepPartial<Settings>): void => {
     // Update the UI immediately; storage is the source of truth for every other context.
     setSettings((current) => applyPatch(current, change));
-    void patchSettings(change);
+    pendingWrites.current += 1;
+    patchSettings(change).then(
+      (stored) => {
+        pendingWrites.current -= 1;
+        // The last write has landed: settle on exactly what storage now holds.
+        if (pendingWrites.current === 0) setSettings(stored);
+      },
+      (err: unknown) => {
+        pendingWrites.current -= 1;
+        setLastError(`That setting could not be saved: ${err instanceof Error ? err.message : String(err)}`);
+        if (pendingWrites.current === 0) void loadSettings().then(setSettings, () => undefined);
+      },
+    );
   }, []);
+  const clearError = useCallback(() => setLastError(null), []);
   const enable = useCallback(() => run({ type: 'hf/enable' }), [run]);
   const disable = useCallback(() => run({ type: 'hf/disable' }), [run]);
   const act = useCallback((action: ActionId, params?: ActionParams) => send({ t: 'action', action, params }), [send]);
@@ -209,12 +238,13 @@ export function EngineProvider({ children, controllable = true }: { children: Re
       disable,
       busy,
       lastError,
+      clearError,
       engineError: enabled ? engineError : null,
       act,
       calibration,
       onFrame,
     }),
-    [loaded, enabled, status, settings, busy, lastError, engineError, patch, enable, disable, act, calibration, onFrame],
+    [loaded, enabled, status, settings, busy, lastError, clearError, engineError, patch, enable, disable, act, calibration, onFrame],
   );
 
   return <EngineContext.Provider value={api}>{children}</EngineContext.Provider>;

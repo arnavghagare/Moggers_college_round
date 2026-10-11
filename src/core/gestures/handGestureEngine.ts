@@ -1,4 +1,4 @@
-import type { Handedness, HandStatus } from '../../shared/types';
+import type { Handedness, HandStatus, Point } from '../../shared/types';
 import { computeHandFeatures, type HandFeatures, type HandObservation } from '../hand/features';
 import { HandMotionTracker, SeparationTracker, type MotionState } from '../hand/motion';
 import { scoreHandPoses, type PoseScores } from '../hand/poses';
@@ -56,14 +56,37 @@ const HAND_LOST_GRACE_MS = 180;
 /** Change in palm separation (image heights) that maps to a two-hand score of 1. */
 const TWO_HAND_FULL_CHANGE = 0.3;
 const STROKE_LOCKOUT_MS = 700;
+/**
+ * A hand that has only just come into view is still settling: its first
+ * frames are often blurred or half out of frame. A pinch seen this early is
+ * not treated as a click.
+ */
+const ENTRY_GUARD_MS = 250;
+/** A click pinch is made in place. A hand that travels further than this (image heights) while pinched was moving, not clicking. */
+const PINCH_TAP_MAX_TRAVEL = 0.12;
+/**
+ * The model's left / right label sometimes flips for a few frames on the same
+ * hand. A lone hand this close (image heights) to where the other-labelled
+ * hand just was is that same hand, and keeps its label.
+ */
+const SAME_HAND_DISTANCE = 0.18;
+/** A relabelling that lasts this long is taken as the model correcting itself. */
+const FLIP_ACCEPT_MS = 600;
 
 interface HandState {
   poses: PoseTracker;
   motion: HandMotionTracker;
   raise: SustainTrigger;
+  firstSeen: number;
   lastSeen: number;
   lastOpenSeen: number;
+  /** Since when the model has been calling this hand by the other label. */
+  flipSince: number | null;
   pinchStart: number | null;
+  /** The pinch was already closing as the hand came into view: too early to be a deliberate click. */
+  pinchAtEntry: boolean;
+  /** Where the palm was when the pinch closed. */
+  pinchOrigin: Point | null;
   pinchHoldActive: boolean;
   strokeLockUntil: number;
   last: TrackedHand | null;
@@ -73,9 +96,13 @@ const newHandState = (t: number): HandState => ({
   poses: new PoseTracker(),
   motion: new HandMotionTracker(),
   raise: new SustainTrigger(),
+  firstSeen: t,
   lastSeen: t,
   lastOpenSeen: -Infinity,
+  flipSince: null,
   pinchStart: null,
+  pinchAtEntry: false,
+  pinchOrigin: null,
   pinchHoldActive: false,
   strokeLockUntil: 0,
   last: null,
@@ -122,8 +149,9 @@ export class HandGestureEngine {
 
     // Keep the highest-scoring observation per handedness.
     const byHand = new Map<Handedness, HandObservation>();
-    for (const obs of observations) {
-      if (obs.landmarks.length !== 21) continue;
+    for (const seenAs of observations) {
+      if (seenAs.landmarks.length !== 21) continue;
+      const obs = this.keepLabel(t, seenAs, observations, aspect);
       const prev = byHand.get(obs.handedness);
       if (!prev || obs.score > prev.score) byHand.set(obs.handedness, obs);
     }
@@ -159,6 +187,29 @@ export class HandGestureEngine {
     return { hands: tracked, events };
   }
 
+  /**
+   * Keep a hand's left / right label steady across a brief flip by the model.
+   * Without this, one flipped frame makes the hand look like it left and a new
+   * one arrived, which drops a pinch in progress.
+   */
+  private keepLabel(t: number, obs: HandObservation, all: HandObservation[], aspect: number): HandObservation {
+    const own = this.hands.get(obs.handedness);
+    if (own) {
+      own.flipSince = null;
+      return obs;
+    }
+    const other: Handedness = obs.handedness === 'Left' ? 'Right' : 'Left';
+    const state = this.hands.get(other);
+    // Two hands really in view, or nothing to be confused with.
+    if (!state?.last || all.some((o) => o !== obs && o.handedness === other)) return obs;
+    const was = state.last.features.wrist;
+    const now = obs.landmarks[0];
+    if (Math.hypot((now.x - was.x) * aspect, now.y - was.y) > SAME_HAND_DISTANCE) return obs;
+    state.flipSince ??= t;
+    if (t - state.flipSince >= FLIP_ACCEPT_MS) return obs;
+    return { ...obs, handedness: other };
+  }
+
   private updateHand(
     t: number,
     state: HandState,
@@ -184,7 +235,10 @@ export class HandGestureEngine {
         events.push({ id: ev.id, phase: 'start', hand, confidence: ev.confidence, t });
         if (ev.id === 'pinch') {
           // A pinch acts on release (tap) or after a hold, never on first contact.
+          // One made as the hand comes into view can still become a hold, but never a click.
           state.pinchStart = t;
+          state.pinchAtEntry = t - state.firstSeen < ENTRY_GUARD_MS;
+          state.pinchOrigin = { ...features.palmCenter };
           state.pinchHoldActive = false;
         } else {
           this.trigger(ev.id, hand, ev.confidence, t, events);
@@ -194,7 +248,7 @@ export class HandGestureEngine {
           if (grab && ev.confidence >= grab.threshold) this.trigger('grab', hand, ev.confidence, t, events);
         }
       } else {
-        if (ev.id === 'pinch') this.endPinch(t, state, hand, ev.confidence, events);
+        if (ev.id === 'pinch') this.endPinch(t, state, hand, ev.confidence, events, features.palmCenter, aspect);
         events.push({ id: ev.id, phase: 'end', hand, confidence: ev.confidence, t });
       }
     }
@@ -229,18 +283,31 @@ export class HandGestureEngine {
     return result;
   }
 
-  private endPinch(t: number, state: HandState, hand: Handedness, confidence: number, events: GestureEvent[]): void {
+  private endPinch(
+    t: number,
+    state: HandState,
+    hand: Handedness,
+    confidence: number,
+    events: GestureEvent[],
+    palm: Point,
+    aspect: number,
+  ): void {
     const started = state.pinchStart;
+    const origin = state.pinchOrigin;
     state.pinchStart = null;
+    state.pinchOrigin = null;
     if (state.pinchHoldActive) {
       state.pinchHoldActive = false;
       events.push({ id: 'pinch_hold', phase: 'end', hand, confidence, t });
       return;
     }
-    if (started === null) return;
+    if (started === null || state.pinchAtEntry) return;
     const pinch = this.enabled('pinch');
     if (!pinch) return;
     const held = t - started;
+    // A hand sweeping across the picture can look pinched on the way: only a pinch made in place is a click.
+    const travelled = origin ? Math.hypot((palm.x - origin.x) * aspect, palm.y - origin.y) : 0;
+    if (travelled > PINCH_TAP_MAX_TRAVEL) return;
     // With no hold gesture configured, a very long pinch is treated as a
     // change of mind rather than a click.
     if (held <= MAX_TAP_MS) this.trigger('pinch', hand, Math.max(confidence, pinch.threshold), t, events);

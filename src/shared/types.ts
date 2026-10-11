@@ -28,6 +28,9 @@ export type Phase =
   | 'suspended'
   | 'error';
 
+/** Why Handsfree is paused right after it is switched on with voice available: it waits to be told to begin. */
+export const AWAITING_START = 'Waiting for you to say "start"';
+
 export type Quality = 'good' | 'fair' | 'poor' | 'lost' | 'off';
 
 export interface AxisCalibration {
@@ -118,16 +121,23 @@ export type VoiceResultStatus =
 
 export interface VoiceStatus {
   supported: boolean;
-  state: 'off' | 'starting' | 'listening' | 'muted' | 'error';
+  /** `reconnecting`: the recogniser dropped out and is being restarted; nothing is heard meanwhile. */
+  state: 'off' | 'starting' | 'listening' | 'muted' | 'reconnecting' | 'error';
   mode: 'always' | 'wake' | 'push';
   error: string | null;
   recovery: string | null;
   interim: string;
   lastPhrase: string;
   lastIntent: string | null;
+  /** The value the parser extracted from the last phrase (search query, site, text to type), if any. */
+  lastPayload: string;
   lastConfidence: number | null;
   lastStatus: VoiceResultStatus | null;
   lastMessage: string;
+  /** The last spoken command that was actually carried out. */
+  lastExecuted: string;
+  /** What the browser reported back about the most recent command, when it had something to say. */
+  lastNote: string;
   micState: 'off' | 'on' | 'denied' | 'notfound' | 'error';
   micLevel: number;
   noiseFloor: number;

@@ -2,7 +2,8 @@ import { useEffect, useState, type CSSProperties } from 'react';
 import { VOICE_LANGUAGES } from '../../shared/settings';
 import { Alert, Chip, Segmented, Slider, Switch, Ticker } from '../components';
 import { navigate, requestMedia, useEngine, usePermission, type PermissionValue } from '../engine';
-import { MODES, currentMode } from '../modes';
+import { MODES, currentMode, modePatch } from '../modes';
+import { Orb3D } from '../Orb3D';
 
 const PERMISSION_TEXT: Record<PermissionValue, string> = {
   granted: 'Allowed',
@@ -30,29 +31,44 @@ export function Welcome() {
     if (match) patch({ voice: { lang: match.code } });
   }, [loaded, onboarded, patch]);
 
+  // Devices that opened successfully here, for browsers that cannot report the permission state.
+  const [opened, setOpened] = useState({ video: false, audio: false });
+
   const allow = async (kind: 'video' | 'audio'): Promise<void> => {
     setMessage(null);
     const result = await requestMedia(kind);
-    if (!result.ok) setMessage(result.message);
+    if (result.ok) setOpened((o) => ({ ...o, [kind]: true }));
+    else setMessage(result.message);
   };
 
   const finish = async (): Promise<void> => {
-    patch({ onboarded: true, ...(mode.id === 'voice' ? { features: { voice: true } } : {}) });
-    await engine.enable();
+    patch({ onboarded: true, ...modePatch(mode.id) });
+    // If it could not start, stay here: the reason is shown above the button.
+    if (!(await engine.enable())) return;
     // Head mode goes straight to calibration; the others to their own page.
     navigate(mode.id === 'head' ? 'head?start=1' : mode.route);
   };
 
-  const cameraReady = !needsCamera || camera === 'granted';
-  const micReady = !needsMic || microphone === 'granted';
+  const cameraOk = camera === 'granted' || (camera === 'unknown' && opened.video);
+  const micOk = microphone === 'granted' || (microphone === 'unknown' && opened.audio);
+  const cameraReady = !needsCamera || cameraOk;
+  const micReady = !needsMic || micOk;
 
   return (
     <>
       <Ticker />
       <main className="welcome" style={{ '--mode': mode.color } as CSSProperties}>
-        <div className="brand" style={{ padding: 0 }}>
-          <span className="brand-mark" aria-hidden="true" />
-          <span className="brand-name">Handsfree</span>
+        <div className="row between">
+          <div className="brand" style={{ padding: 0 }}>
+            <span className="brand-mark" aria-hidden="true" />
+            <span className="brand-name">Handsfree</span>
+          </div>
+          {/* Running setup again is optional: there is always a way back. */}
+          {onboarded && (
+            <button type="button" className="btn small" onClick={() => navigate('')}>
+              Back to dashboard
+            </button>
+          )}
         </div>
         <div className="steps" role="progressbar" aria-label="Setup progress" aria-valuemin={1} aria-valuemax={3} aria-valuenow={step + 1}>
           {[0, 1, 2].map((i) => (
@@ -62,37 +78,47 @@ export function Welcome() {
 
         {step === 0 && (
           <>
-            <h1 className="hero-title">
-              Browse with <span className="hl">zero</span> hands.
-            </h1>
-            <p className="muted" style={{ fontSize: '1.2rem', maxWidth: '58ch', fontWeight: 600 }}>
-              Your head, your hand or your voice becomes the mouse and keyboard. Just a normal webcam and mic. No extra gear.
-            </p>
+            <div className="hero-showcase">
+              <div className="hero hero-editorial">
+                <span className="eyebrow">HANDSFREE ONBOARDING</span>
+                <h1 className="hero-title">
+                  Browse with <span className="serif-accent hl">Zero</span> hands.
+                </h1>
+                <p className="muted" style={{ fontSize: '1.15rem', maxWidth: '58ch', lineHeight: 1.6 }}>
+                  Your head, your hand or your voice becomes the mouse and keyboard. Vision runs entirely on-device from a standard webcam; voice uses Chrome's speech recognition.
+                </p>
+                <div className="row" style={{ marginTop: 8 }}>
+                  <button type="button" className="btn primary big" onClick={() => setStep(1)}>
+                    Get Started →
+                  </button>
+                </div>
+              </div>
+              <div className="orb-wrap" style={{ display: 'flex', justifyContent: 'center' }}>
+                <Orb3D size={260} interactive={true} />
+              </div>
+            </div>
+
             <div className="feature-list">
               {MODES.map((m) => (
-                <div key={m.id} className="card loud" style={{ '--pop': m.color } as CSSProperties}>
+                <div key={m.id} className="card" style={{ '--mode': m.color } as CSSProperties}>
                   <span style={{ fontSize: '2.4rem' }} aria-hidden="true">
                     {m.emoji}
                   </span>
                   <h2>{m.name}</h2>
-                  <p>{m.tagline}</p>
+                  <p className="muted">{m.tagline}</p>
                 </div>
               ))}
             </div>
+
             <section className="card">
-              <h2>The privacy bit</h2>
+              <h2>Your Privacy Architecture</h2>
               <ul className="ticks" style={{ marginTop: 12 }}>
-                <li>Camera frames never leave this computer. Nothing is recorded or saved.</li>
-                <li>The tracking models ship inside the extension. Nothing is downloaded or uploaded while you use it.</li>
-                <li>Voice uses Chrome's speech recognition, which sends mic audio to Google while it is listening. You can skip voice completely.</li>
-                <li>Camera and mic are only on while Handsfree is on, and you can always see when.</li>
+                <li>Camera frames never leave this computer. All neural processing runs locally in memory. Nothing is recorded or stored.</li>
+                <li>The vision models ship inside the extension package. Zero external network telemetry for vision.</li>
+                <li>Voice uses Chrome's built-in speech recognition, which sends mic audio to Google while it is listening. You can run completely without voice if preferred.</li>
+                <li>Camera and mic indicators are always visible, and you can pause or disconnect anytime.</li>
               </ul>
             </section>
-            <div className="row">
-              <button type="button" className="btn primary big" onClick={() => setStep(1)}>
-                Let's go
-              </button>
-            </div>
           </>
         )}
 
@@ -118,7 +144,7 @@ export function Welcome() {
                         <li key={line}>{line}</li>
                       ))}
                     </ul>
-                    <button type="button" className="btn" aria-pressed={chosen} onClick={() => patch({ controlMode: m.id })}>
+                    <button type="button" className="btn" aria-pressed={chosen} onClick={() => patch(modePatch(m.id))}>
                       {chosen ? 'Picked' : `Pick ${m.name}`}
                     </button>
                   </article>
@@ -171,8 +197,8 @@ export function Welcome() {
                   <p className="muted small">{needsCamera ? 'Follows your head or hand. Frames stay on this computer.' : `Not needed for ${mode.name.toLowerCase()}.`}</p>
                 </div>
                 <div className="row">
-                  <Chip tone={camera === 'granted' ? 'ok' : camera === 'denied' ? 'bad' : ''}>{PERMISSION_TEXT[camera]}</Chip>
-                  {needsCamera && camera !== 'granted' && (
+                  <Chip tone={cameraOk ? 'ok' : camera === 'denied' ? 'bad' : ''}>{cameraOk ? 'Allowed' : PERMISSION_TEXT[camera]}</Chip>
+                  {needsCamera && !cameraOk && (
                     <button type="button" className="btn primary" onClick={() => void allow('video')}>
                       Allow camera
                     </button>
@@ -186,8 +212,8 @@ export function Welcome() {
                   <p className="muted small">{needsMic ? "For voice commands and dictation, through Chrome's speech recognition." : 'Voice is off, so the mic is not needed.'}</p>
                 </div>
                 <div className="row">
-                  <Chip tone={microphone === 'granted' ? 'ok' : microphone === 'denied' ? 'bad' : ''}>{PERMISSION_TEXT[microphone]}</Chip>
-                  {needsMic && microphone !== 'granted' && (
+                  <Chip tone={micOk ? 'ok' : microphone === 'denied' ? 'bad' : ''}>{micOk ? 'Allowed' : PERMISSION_TEXT[microphone]}</Chip>
+                  {needsMic && !micOk && (
                     <button type="button" className="btn primary" onClick={() => void allow('audio')}>
                       Allow microphone
                     </button>
@@ -221,7 +247,7 @@ export function Welcome() {
                 Back
               </button>
               <button type="button" className="btn primary big" disabled={!cameraReady || !micReady || engine.busy} onClick={() => void finish()}>
-                Start Handsfree
+                {engine.busy ? 'Starting...' : 'Start Handsfree'}
               </button>
               {(!cameraReady || !micReady) && <span className="muted small">Allow the devices above to continue.</span>}
             </div>

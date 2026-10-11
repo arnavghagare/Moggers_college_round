@@ -1,8 +1,10 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { modeLabel } from '../core/handsfreeCore';
-import { Alert, Chip } from '../dashboard/components';
+import { Alert, Chip, Segmented } from '../dashboard/components';
 import { EngineProvider, useAppearance, useEngine } from '../dashboard/engine';
+import { MODES, currentMode, modePatch } from '../dashboard/modes';
+import { describeRun } from '../dashboard/runState';
 import '../dashboard/styles.css';
 
 function openDashboard(route: string): void {
@@ -14,7 +16,8 @@ function Popup() {
   const engine = useEngine();
   const { status, enabled, settings } = engine;
   useAppearance(settings);
-  const paused = status?.phase === 'paused' || status?.phase === 'suspended';
+  const run = describeRun(enabled, status, currentMode(settings.controlMode).name);
+  const paused = run.paused;
 
   if (!engine.loaded) return <div className="popup-root muted">Loading...</div>;
 
@@ -27,7 +30,7 @@ function Popup() {
 
       <div className="row">
         <Chip tone={!enabled ? '' : status?.phase === 'active' ? 'ok' : status?.phase === 'error' ? 'bad' : 'warn'}>
-          {!enabled ? 'Off' : status ? (paused ? 'Paused' : status.phase === 'active' ? 'Active' : status.phase === 'error' ? 'Stopped' : 'Starting') : 'Connecting'}
+          {!enabled ? 'Off' : status ? (paused ? 'Actions paused' : status.phase === 'active' ? 'Browsing enabled' : status.phase === 'error' ? 'Stopped' : 'Starting') : 'Connecting'}
         </Chip>
         {enabled && <Chip>{modeLabel(settings.controlMode)}</Chip>}
         {status?.camera.state === 'on' && <Chip tone="live">Camera on</Chip>}
@@ -61,12 +64,20 @@ function Popup() {
           disabled={engine.busy}
           onClick={() => void (enabled ? engine.disable() : engine.enable())}
         >
-          {enabled ? 'Turn off' : 'Turn on Handsfree'}
+          {engine.busy ? (enabled ? 'Turning off...' : 'Turning on...') : enabled ? 'Turn off' : 'Turn on Handsfree'}
         </button>
       )}
+      {settings.onboarded && (
+        <Segmented
+          label="Mode"
+          value={currentMode(settings.controlMode).id}
+          options={MODES.map((m) => ({ value: m.id, label: `${m.emoji} ${m.name.replace(' mode', '')}` }))}
+          onChange={(id) => engine.patch(modePatch(id))}
+        />
+      )}
       {enabled && status && status.phase !== 'error' && status.phase !== 'loading' && (
-        <button type="button" className="btn" onClick={() => engine.act('toggle_pause')}>
-          {paused ? 'Resume' : 'Pause'}
+        <button type="button" className={`btn${paused ? ' primary' : ''}`} onClick={() => engine.act('toggle_pause')}>
+          {run.awaitingStart ? 'Start browsing' : paused ? 'Resume' : 'Pause'}
         </button>
       )}
       <button type="button" className="btn" onClick={() => openDashboard('')}>

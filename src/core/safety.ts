@@ -1,5 +1,5 @@
 import { ACTIONS, type ActionId } from '../shared/actions';
-import type { Phase } from '../shared/types';
+import { AWAITING_START, type Phase } from '../shared/types';
 
 export interface SafetyConfig {
   graceMs: number;
@@ -24,8 +24,25 @@ export class SafetyController {
   private graceUntil = 0;
   private lostSince: number | null = null;
   private reason: string | null = null;
+  /**
+   * The user's own intent: true once they have asked for actions to run, false
+   * after they paused. It survives restarts of tracking, so a mode switch or a
+   * camera hiccup can never un-pause Handsfree behind the user's back.
+   */
+  private armed: boolean;
+  private everArmed: boolean;
 
-  constructor(private config: SafetyConfig) {}
+  /**
+   * @param armed false to stay paused after starting up until the user says
+   *   "start" (or resumes another way). Used whenever voice is available.
+   */
+  constructor(
+    private config: SafetyConfig,
+    armed = true,
+  ) {
+    this.armed = armed;
+    this.everArmed = armed;
+  }
 
   configure(config: SafetyConfig): void {
     this.config = config;
@@ -53,10 +70,21 @@ export class SafetyController {
     return this.state === 'active' || this.state === 'grace';
   }
 
-  /** Tracking and models are ready: begin the startup grace period. */
+  /** Paused only because the user has not yet said "start" since switching on. */
+  get awaitingStart(): boolean {
+    return !this.everArmed;
+  }
+
+  /** Tracking and models are ready: begin the startup grace period, unless the user wants it paused. */
   start(t: number): void {
     if (this.state !== 'loading' && this.state !== 'error') return;
-    this.enterGrace(t);
+    if (this.armed) {
+      this.enterGrace(t);
+      return;
+    }
+    this.state = 'paused';
+    this.reason = this.everArmed ? 'Paused by you' : AWAITING_START;
+    this.lostSince = null;
   }
 
   setLoading(): void {
@@ -71,7 +99,10 @@ export class SafetyController {
   }
 
   pause(reason = 'Paused by you'): SafetyEvent | null {
-    if (this.state === 'paused' || this.state === 'loading' || this.state === 'error') return null;
+    if (this.state === 'paused') return null;
+    this.armed = false;
+    // Still starting, or stopped by an error: remember the wish, it applies as soon as tracking is ready.
+    if (this.state === 'loading' || this.state === 'error') return 'paused';
     this.state = 'paused';
     this.reason = reason;
     this.lostSince = null;
@@ -80,7 +111,13 @@ export class SafetyController {
 
   /** Resume from a user pause or an automatic suspension. Always re-enters the grace period. */
   resume(t: number): SafetyEvent | null {
+    if (this.state === 'loading' || this.state === 'error') {
+      if (this.armed) return null;
+      this.armed = this.everArmed = true;
+      return 'resumed';
+    }
     if (this.state !== 'paused' && this.state !== 'suspended') return null;
+    this.armed = this.everArmed = true;
     this.enterGrace(t);
     return 'resumed';
   }
@@ -130,7 +167,13 @@ export class SafetyController {
       case 'suspended':
         return def.allowedWhilePaused
           ? { allowed: true }
-          : { allowed: false, reason: 'Handsfree is paused. Say "resume" to continue' };
+          : {
+              allowed: false,
+              reason:
+                this.state === 'paused' && this.reason === AWAITING_START
+                  ? 'Listening, but actions are paused. Say "start" to begin'
+                  : 'Handsfree is paused. Say "resume" to continue',
+            };
       case 'loading':
         return def.allowedWhilePaused ? { allowed: true } : { allowed: false, reason: 'Handsfree is still starting' };
       case 'error':

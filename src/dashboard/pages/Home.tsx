@@ -1,7 +1,9 @@
 import type { CSSProperties } from 'react';
 import { Alert, Chip, Tile, qualityText, qualityTone, type Tone } from '../components';
+import { describeRun, voiceLabel } from '../runState';
 import { navigate, useEngine, type EngineApi } from '../engine';
-import { MODES, currentMode } from '../modes';
+import { MODES, currentMode, modePatch } from '../modes';
+import { Orb3D } from '../Orb3D';
 
 const CAMERA_TEXT: Record<string, [string, Tone]> = {
   off: ['Off', ''],
@@ -12,14 +14,6 @@ const CAMERA_TEXT: Record<string, [string, Tone]> = {
   error: ['Error', 'bad'],
 };
 
-const VOICE_TEXT: Record<string, [string, Tone]> = {
-  off: ['Off', ''],
-  starting: ['Starting', 'warn'],
-  listening: ['Listening', 'live'],
-  muted: ['Muted', ''],
-  error: ['Error', 'bad'],
-};
-
 /** Problems and nudges, shown on every page that needs them. */
 export function StatusAlerts({ engine }: { engine: EngineApi }) {
   const { status } = engine;
@@ -27,7 +21,12 @@ export function StatusAlerts({ engine }: { engine: EngineApi }) {
     <>
       {engine.lastError && (
         <Alert tone="bad" title="That did not work">
-          {engine.lastError}
+          <span className="row between">
+            <span>{engine.lastError}</span>
+            <button type="button" className="btn small" onClick={engine.clearError}>
+              Dismiss
+            </button>
+          </span>
         </Alert>
       )}
       {engine.engineError && (
@@ -72,59 +71,52 @@ export function StatusAlerts({ engine }: { engine: EngineApi }) {
 export function Home() {
   const engine = useEngine();
   const { status, settings, enabled } = engine;
-  const paused = status?.phase === 'paused' || status?.phase === 'suspended';
   const active = currentMode(settings.controlMode);
+  const run = describeRun(enabled, status, active.name);
+  const { paused, headline, detail } = run;
   const camera = CAMERA_TEXT[status?.camera.state ?? 'off'];
-  const voice = VOICE_TEXT[status?.voice.state ?? 'off'];
-
-  const headline = !enabled
-    ? 'Handsfree is off'
-    : !status
-      ? 'Connecting...'
-      : paused
-        ? 'Paused'
-        : status.phase === 'grace'
-          ? `Ready in ${Math.ceil(status.graceRemainingMs / 1000)}...`
-          : status.phase === 'loading'
-            ? 'Warming up'
-            : status.phase === 'error'
-              ? 'Stopped'
-              : `${active.name} is live`;
-
-  const detail = !enabled
-    ? 'Camera and microphone are not in use.'
-    : !status
-      ? 'Starting the engine.'
-      : paused
-        ? `${status.pausedReason ?? 'Paused'}. Nothing can be clicked until you resume.`
-        : status.phase === 'grace'
-          ? 'The cursor moves, but clicks are locked for a moment so nothing fires by accident.'
-          : status.phase === 'loading'
-            ? 'Starting the camera and loading the tracking models.'
-            : status.phase === 'error'
-              ? 'Something went wrong. Details below.'
-              : 'Open any site and go. Say "stop" to pause.';
+  const voice = voiceLabel(status?.voice);
+  const hearing = status?.voice.state === 'listening' || status?.voice.state === 'starting' || status?.voice.state === 'reconnecting';
 
   return (
     <div className="stack" style={{ gap: 30 }}>
-      <header className="hero">
-        <span className="eyebrow">Hands-free browsing</span>
-        <h1>
-          No hands. No mouse. <span className="hl pink">No problem.</span>
-        </h1>
-      </header>
+      <div className="hero-showcase">
+        <header className="hero hero-editorial">
+          <span className="eyebrow">HANDSFREE STUDIO · NEURAL VISION</span>
+          <h1>
+            The Hands-Free <span className="serif-accent hl">Experience</span>
+          </h1>
+          <p className="subhead">
+            Zero physical touch. Absolute intent. Navigate, scroll, click and dictate across the web using standard webcam computer vision and speech recognition.
+          </p>
+          <div className="row" style={{ marginTop: 8 }}>
+            <Chip tone="ok">Local Model Inference</Chip>
+            <Chip tone="info">Up to 60 FPS Tracking</Chip>
+            <Chip>Zero Footage Stored</Chip>
+          </div>
+        </header>
+
+        <div className="orb-wrap" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+          <Orb3D size={280} interactive={true} />
+        </div>
+      </div>
 
       <section className={`power${enabled ? ' on' : ''}`} aria-label="Handsfree power">
-        <div style={{ flex: '1 1 280px' }}>
+        <div style={{ flex: '1 1 300px' }}>
           <h2>{headline}</h2>
-          <p className="muted" style={{ fontWeight: 600 }}>
+          <p className="muted" style={{ fontWeight: 500, fontSize: '0.98rem' }}>
             {detail}
           </p>
         </div>
         <div className="row">
           {enabled && status && status.phase !== 'error' && status.phase !== 'loading' && (
-            <button type="button" className="btn big" onClick={() => engine.act('toggle_pause')}>
-              {paused ? 'Resume' : 'Pause'}
+            <button type="button" className={`btn big${paused ? ' primary' : ''}`} onClick={() => engine.act('toggle_pause')}>
+              {run.awaitingStart ? 'Start' : paused ? 'Resume' : 'Pause'}
+            </button>
+          )}
+          {enabled && status && settings.features.voice && (
+            <button type="button" className="btn big" onClick={() => engine.act('toggle_listening')}>
+              {hearing ? 'Stop listening' : status.voice.state === 'error' ? 'Reconnect voice' : 'Start listening'}
             </button>
           )}
           <button
@@ -133,8 +125,13 @@ export function Home() {
             disabled={engine.busy}
             onClick={() => void (enabled ? engine.disable() : engine.enable())}
           >
-            {enabled ? 'Turn off' : 'Turn on'}
+            {engine.busy ? (enabled ? 'Turning off...' : 'Turning on...') : enabled ? 'Turn off' : 'Turn on'}
           </button>
+          {enabled && status?.phase === 'active' && (
+            <button type="button" className="btn big" onClick={() => navigate('playground')}>
+              Try the playground
+            </button>
+          )}
         </div>
       </section>
 
@@ -169,7 +166,7 @@ export function Home() {
                     className="btn"
                     aria-pressed={isCurrent}
                     onClick={() => {
-                      engine.patch({ controlMode: mode.id });
+                      engine.patch(modePatch(mode.id));
                       navigate(mode.route);
                     }}
                   >
@@ -184,7 +181,13 @@ export function Home() {
 
       <section className="grid tiles" aria-label="Live status">
         <Tile label="Camera" value={camera[0]} tone={camera[1]} detail={status?.camera.label || undefined} />
-        <Tile label="Microphone" value={voice[0]} tone={voice[1]} detail={status?.voice.error ?? (status?.voice.dictating ? 'Dictating' : undefined)} />
+        <Tile label="Voice" value={voice[0]} tone={voice[1]} detail={status?.voice.error ?? status?.voice.recovery ?? undefined} />
+        <Tile
+          label="Browsing actions"
+          value={!status ? 'Off' : status.phase === 'active' ? 'Enabled' : status.phase === 'grace' ? 'Unlocking' : 'Paused'}
+          tone={!status ? '' : status.phase === 'active' ? 'ok' : 'warn'}
+          detail={status?.phase === 'paused' || status?.phase === 'suspended' ? (status.pausedReason ?? undefined) : undefined}
+        />
         {settings.controlMode !== 'voice' && (
           <Tile
             label={settings.controlMode === 'hand' ? 'Hand tracking' : 'Face tracking'}
@@ -205,6 +208,7 @@ export function Home() {
           value={status?.voice.lastPhrase ? `"${status.voice.lastPhrase}"` : 'Nothing yet'}
           detail={status?.voice.lastStatus ? `${status.voice.lastIntent ?? 'not a command'} · ${status.voice.lastStatus}` : undefined}
         />
+        <Tile label="Last command done" value={status?.voice.lastExecuted || 'Nothing yet'} />
         <Tile label="Clicks" value={status?.stats.clicks ?? 0} detail={`${status?.stats.canceledClicks ?? 0} cancelled`} />
         <Tile label="Speed" value={status && status.camera.state === 'on' ? `${status.perf.fps.toFixed(0)} fps` : '-'} detail={status && status.camera.state === 'on' ? `${status.perf.frameMs.toFixed(0)} ms a frame` : undefined} />
       </section>
@@ -213,7 +217,7 @@ export function Home() {
         <h2>Three ways to stop</h2>
         <p>Whatever mode you are in, these always work.</p>
         <div className="row">
-          <span className="say">say "stop"</span>
+          <span className="say">say "pause" or "stop"</span>
           <span className="say plain">
             <kbd>Alt</kbd> <kbd>Shift</kbd> <kbd>P</kbd>
           </span>

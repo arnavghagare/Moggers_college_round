@@ -129,7 +129,16 @@ export function Head({ autoStart }: { autoStart: boolean }) {
                   Reset
                 </button>
               </div>
-              {enabled && !faceReady && <p className="muted small" style={{ marginTop: 10 }}>Waiting for the camera and face model...</p>}
+              {enabled && !faceReady && (
+                <p className="muted small" style={{ marginTop: 10 }}>
+                  {status?.error
+                    ? 'Calibration needs the camera. See the message above.'
+                    : !isHead && !settings.features.faceGestures
+                      ? 'Face tracking is not running in this mode. Press "Use head mode" to calibrate.'
+                      : 'Waiting for the camera and face model...'}
+                </p>
+              )}
+              {!enabled && <p className="muted small" style={{ marginTop: 10 }}>Turn Handsfree on to calibrate.</p>}
             </section>
 
             <section className="card">

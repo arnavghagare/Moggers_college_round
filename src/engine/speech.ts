@@ -46,6 +46,18 @@ export function recognitionAvailable(): boolean {
 
 const FATAL = new Set(['not-allowed', 'service-not-allowed', 'audio-capture', 'language-not-supported']);
 
+/** A session that has not reported "started" after this long is abandoned and retried. */
+const START_TIMEOUT_MS = 8000;
+/**
+ * Chrome ends a healthy session itself (after silence, or after about a
+ * minute), and every end is followed by a restart here. A session that
+ * reports nothing at all for this long has stalled without saying so.
+ */
+const SILENT_SESSION_MS = 90000;
+const WATCHDOG_INTERVAL_MS = 4000;
+/** A session shorter than this ended as soon as it began: something is wrong, so it is retried with a delay. */
+const MIN_HEALTHY_SESSION_MS = 1500;
+
 /**
  * Speech recognition through the browser's Web Speech API.
  *
@@ -60,6 +72,10 @@ export class WebSpeechProvider implements SpeechProvider {
   private session = 0;
   private restartTimer: ReturnType<typeof setTimeout> | null = null;
   private failures = 0;
+  private watchdog: ReturnType<typeof setInterval> | null = null;
+  /** When the current session last showed a sign of life. */
+  private lastActivity = 0;
+  private started = false;
   private readonly meter: MicMeter;
   readonly supported = recognitionAvailable();
 
@@ -78,6 +94,7 @@ export class WebSpeechProvider implements SpeechProvider {
     this.wanted = true;
     this.failures = 0;
     void this.meter.start();
+    this.watchdog ??= setInterval(() => this.checkAlive(), WATCHDOG_INTERVAL_MS);
     if (this.recognition && changed) {
       // onend restarts it with the new language.
       this.recognition.abort();
@@ -90,6 +107,8 @@ export class WebSpeechProvider implements SpeechProvider {
     this.wanted = false;
     if (this.restartTimer) clearTimeout(this.restartTimer);
     this.restartTimer = null;
+    if (this.watchdog) clearInterval(this.watchdog);
+    this.watchdog = null;
     this.meter.stop();
     const r = this.recognition;
     this.recognition = null;
@@ -108,6 +127,37 @@ export class WebSpeechProvider implements SpeechProvider {
     this.stop();
   }
 
+  /** Restart a session that never started, or that stopped reporting without ending. */
+  private checkAlive(): void {
+    const r = this.recognition;
+    if (!this.wanted || !r) return;
+    const idle = Date.now() - this.lastActivity;
+    if (idle < (this.started ? SILENT_SESSION_MS : START_TIMEOUT_MS)) return;
+    // A long quiet spell is not a fault: only a session that never started counts
+    // towards the growing restart delay. Otherwise every silent minute would make
+    // the next gap in listening longer.
+    if (!this.started) this.failures += 1;
+    // Detach first: whatever this session still reports is stale.
+    r.onend = r.onerror = r.onresult = r.onstart = null;
+    this.recognition = null;
+    try {
+      r.abort();
+    } catch {
+      /* already gone */
+    }
+    this.emit({ kind: 'state', state: 'starting' });
+    this.schedule(Math.min(5000, 250 * 2 ** Math.min(this.failures, 5)));
+  }
+
+  /** At most one pending restart, so a session can never be started twice. */
+  private schedule(delayMs: number): void {
+    if (this.restartTimer) clearTimeout(this.restartTimer);
+    this.restartTimer = setTimeout(() => {
+      this.restartTimer = null;
+      this.begin();
+    }, delayMs);
+  }
+
   private begin(): void {
     if (!this.wanted || this.recognition) return;
     const g = globalThis as unknown as { SpeechRecognition?: RecognitionCtor; webkitSpeechRecognition?: RecognitionCtor };
@@ -116,15 +166,22 @@ export class WebSpeechProvider implements SpeechProvider {
 
     const r = new Ctor();
     const session = ++this.session;
+    const began = Date.now();
+    let faulted = false;
     r.lang = this.lang;
     r.continuous = true;
     r.interimResults = true;
     r.maxAlternatives = 3;
 
     r.onstart = () => {
+      this.started = true;
+      this.lastActivity = Date.now();
       this.emit({ kind: 'state', state: 'listening' });
     };
     r.onresult = (ev) => {
+      // Only the session that is current may speak: a late event from an old one is stale.
+      if (this.recognition !== r) return;
+      this.lastActivity = Date.now();
       this.failures = 0;
       let interim = '';
       for (let i = ev.resultIndex; i < ev.results.length; i++) {
@@ -145,11 +202,14 @@ export class WebSpeechProvider implements SpeechProvider {
       this.emit({ kind: 'interim', text: interim.trim() });
     };
     r.onerror = (ev) => {
+      if (this.recognition !== r) return;
+      this.lastActivity = Date.now();
       this.emit({ kind: 'error', code: ev.error });
       if (FATAL.has(ev.error)) {
         this.wanted = false;
         this.meter.stop();
       } else if (ev.error !== 'no-speech' && ev.error !== 'aborted') {
+        faulted = true;
         this.failures += 1;
       }
     };
@@ -159,20 +219,33 @@ export class WebSpeechProvider implements SpeechProvider {
         this.emit({ kind: 'state', state: 'stopped' });
         return;
       }
-      // Chrome ends continuous recognition after silence; restart, backing off on repeated errors.
+      const brief = Date.now() - began < MIN_HEALTHY_SESSION_MS;
+      if (!faulted && !brief) {
+        // The ordinary case: Chrome ends a session after about eight seconds of silence.
+        // The next one starts right here rather than from a timer, because timers in a
+        // hidden extension document are held back by up to a second, and anything said
+        // in that gap would never be heard.
+        this.failures = 0;
+        this.begin();
+        return;
+      }
+      // An error, or a session that ended the moment it began: wait before retrying, longer each time.
+      if (brief && !faulted) this.failures += 1;
       this.emit({ kind: 'state', state: 'starting' });
-      const delay = Math.min(5000, 250 * 2 ** Math.min(this.failures, 5));
-      this.restartTimer = setTimeout(() => this.begin(), delay);
+      this.schedule(Math.min(5000, 250 * 2 ** Math.min(this.failures, 5)));
     };
 
     this.recognition = r;
+    this.started = false;
+    this.lastActivity = Date.now();
     this.emit({ kind: 'state', state: 'starting' });
     try {
       r.start();
     } catch {
+      r.onend = r.onerror = r.onresult = r.onstart = null;
       this.recognition = null;
       this.failures += 1;
-      this.restartTimer = setTimeout(() => this.begin(), 1000);
+      this.schedule(1000);
     }
   }
 }

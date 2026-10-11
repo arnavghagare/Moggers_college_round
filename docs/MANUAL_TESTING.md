@@ -61,6 +61,13 @@ These depend on conventions that still images cannot confirm.
 - [ ] Hand mode ("use hand control"): pointing moves the cursor, a fist freezes it, lowering the hand out of view
       leaves the cursor where it was, and bringing it back does not make the cursor jump.
 - [ ] Hand at the very edge of the frame: tracking drops out without a false gesture.
+- [ ] **Reach calibration** (Hand page, "Calibrate my reach"): holding the hand still for about a second succeeds and
+      the dashed box moves to the hand; the cursor glides, it does not jump. Waving the hand, hiding it, or holding it
+      half out of the picture fails with advice that matches what you did. Cancel changes nothing. "Reset to default" works.
+- [ ] **Poor lighting**: calibration fails with a lighting message rather than saving a bad position.
+- [ ] Bring a hand into view already pinched, or sweep a loosely closed hand across the picture: no click.
+- [ ] Hold a pinch and watch the "Right now" panel: the Left / Right label does not flicker, and the pinch is not dropped.
+- [ ] Say "pause" while pinching to drag: the drag is released and nothing is dropped on the page.
 
 ## 5. Clicking safety
 
@@ -77,15 +84,32 @@ These depend on conventions that still images cannot confirm.
 
 ## 6. Pause and exit
 
-- [ ] "stop" pauses instantly. While paused: head movement, pinches and "click" do nothing; the banner says so.
-- [ ] "resume" continues after the grace period.
+- [ ] Switch Handsfree on with voice enabled: the banner and dashboard say "Listening · Actions paused". Say "open
+      youtube", "click", "scroll down": each is shown as heard, and nothing happens.
+- [ ] Say "start": after the grace period the dashboard says "Voice active · Browsing enabled" and "scroll down" works.
+- [ ] Say words that only sound like it ("star", "smart", "started") while paused: browsing stays paused.
+- [ ] "pause" (and "stop") pauses instantly. While paused: head movement, pinches, dwell and "click" do nothing; the
+      banner says so; the microphone indicator stays on.
+- [ ] Say "open youtube" while paused, then "resume": YouTube does **not** open after resuming.
+- [ ] "resume" or "start" continues after the grace period.
+- [ ] Pause and resume quickly several times in a row: the microphone indicator never doubles up or goes dead.
 - [ ] <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd> pauses and resumes from any tab.
 - [ ] "turn off handsfree" then "confirm": the overlay disappears from pages and the camera light goes off.
 - [ ] Turning off from the popup or dashboard does the same.
 
 ## 7. Voice
 
-- [ ] The Voice page shows "Listening" and the level meter moves when you speak.
+- [ ] The Voice page shows "Listening" and the level meter moves when you speak. Heard / Understood as / Value /
+      Result update for every phrase.
+- [ ] Stay silent for two minutes, then say "scroll down": it still works (recognition restarted by itself).
+- [ ] "Open tab and search" followed by an email address: a new tab opens with only the address in the search box.
+- [ ] "Search for accessibility tools": the current tab shows the results. "Search this tab for cats" on YouTube uses
+      YouTube's own search box.
+- [ ] "open browser settings" opens chrome://settings and Handsfree says it cannot control that page.
+- [ ] "open incognito window": a window opens and Handsfree explains the "Allow in Incognito" setting. After enabling
+      it on chrome://extensions, the cursor works in the incognito window.
+- [ ] Start dictation, say "open youtube": the words are typed, nothing opens. Say "pause" while dictating: dictation
+      ends and later speech is not typed.
 - [ ] "scroll down", "scroll up", "scroll to top", "scroll to bottom", "go back", "go forward", "reload page".
 - [ ] "open new tab", "switch tab", "switch to tab 2", "close tab" (asks first).
 - [ ] "show numbers" then "click 7" (and a bare "7"). "show links", "show buttons", "show fields". "hide numbers".

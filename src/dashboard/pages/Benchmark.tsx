@@ -232,7 +232,7 @@ export function Benchmark() {
   return (
     <>
       <PageHead
-        title="Benchmark"
+        title="Playground"
         lead="Six short tasks that exercise real hands-free browsing. Times and counts are measured as you go and can be exported. Nothing is estimated or compared against anything."
       >
         {index >= 0 && (
@@ -245,8 +245,15 @@ export function Benchmark() {
       <div className="stack">
         {!engine.enabled && (
           <Alert tone="info" title="Handsfree is off">
-            You can run the tasks with a mouse to get a baseline, or turn Handsfree on from the Dashboard to measure hands-free
-            use. Each click is recorded as mouse or Handsfree.
+            <span className="row between">
+              <span>
+                You can run the tasks with a mouse to get a baseline, or turn Handsfree on to measure hands-free use. Each
+                click is recorded as mouse or Handsfree.
+              </span>
+              <button type="button" className="btn primary" disabled={engine.busy} onClick={() => void engine.enable()}>
+                Turn on
+              </button>
+            </span>
           </Alert>
         )}
 

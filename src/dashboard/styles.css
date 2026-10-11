@@ -1645,3 +1645,96 @@ body.popup {
   * { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
   .ticker > div { animation: none; }
 }
+
+/* Selected state for stand-alone toggle buttons (mode picks, colour swatches). */
+.btn[aria-pressed="true"] {
+  border-color: var(--accent-amber);
+  box-shadow: 0 0 0 3px rgba(251, 146, 60, 0.3), var(--inner-highlight);
+}
+
+.switch:has(input:disabled) { cursor: not-allowed; opacity: 0.6; }
+input[type="range"]:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ==========================================================================
+   LIGHT THEME: surfaces that were written for the dark canvas
+   ========================================================================== */
+
+:root[data-theme="light"] select,
+:root[data-theme="light"] input[type="text"],
+:root[data-theme="light"] input[type="email"],
+:root[data-theme="light"] input[type="search"],
+:root[data-theme="light"] textarea,
+:root[data-theme="light"] .search input {
+  background: #ffffff;
+  border-color: var(--border-strong);
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.06);
+}
+:root[data-theme="light"] .alert { background: rgba(255, 255, 255, 0.92); }
+:root[data-theme="light"] .alert.warn { background: rgba(251, 146, 60, 0.12); }
+:root[data-theme="light"] .alert.bad { background: rgba(239, 68, 68, 0.1); }
+:root[data-theme="light"] .alert.ok { background: rgba(16, 185, 129, 0.1); }
+:root[data-theme="light"] body.popup { background: var(--bg); }
+:root[data-theme="light"] .ticker { background: rgba(255, 255, 255, 0.85); }
+
+:root[data-theme="light"] .btn {
+  background: #ffffff;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
+}
+:root[data-theme="light"] .btn:hover {
+  background: #f1f5f9;
+  border-color: rgba(15, 23, 42, 0.25);
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.12);
+}
+:root[data-theme="light"] .btn.primary,
+:root[data-theme="light"] .btn.primary:hover {
+  background: #0f172a;
+  border-color: #0f172a;
+  color: #ffffff;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.25);
+}
+:root[data-theme="light"] .btn.danger { background: rgba(239, 68, 68, 0.1); color: #b91c1c; }
+:root[data-theme="light"] .btn.danger:hover { background: #ef4444; color: #ffffff; }
+:root[data-theme="light"] a:hover { color: #c2410c; }
+
+:root[data-theme="light"] .segmented { background: rgba(15, 23, 42, 0.06); }
+:root[data-theme="light"] .segmented button[aria-pressed="true"] {
+  background: #ffffff;
+  border-color: var(--border-strong);
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.1);
+}
+/* Only the "off" track: a switched-on one keeps its accent colour. */
+:root[data-theme="light"] .switch input:not(:checked) + .track,
+:root[data-theme="light"] .meter,
+:root[data-theme="light"] input[type="range"]::-webkit-slider-runnable-track {
+  background: rgba(15, 23, 42, 0.1);
+}
+:root[data-theme="light"] .bubble.reply { background: rgba(15, 23, 42, 0.05); }
+
+/* The camera view and the calibration screen stay dark in both themes, so their text stays light. */
+.stage .chip,
+:root[data-theme="light"] .cal-stage,
+:root[data-theme="light"] .cal-stage .chip,
+:root[data-theme="light"] .cal-stage .instruction {
+  color: #f8fafc;
+}
+:root[data-theme="light"] .cal-stage .btn {
+  background: rgba(255, 255, 255, 0.1);
+  color: #ffffff;
+  border-color: rgba(255, 255, 255, 0.25);
+}
+
+/* The popup is narrow: keep the three modes on one row. */
+.popup-root .segmented { flex-wrap: nowrap; }
+.popup-root .segmented button { flex: 1 1 0; padding: 8px 6px; white-space: nowrap; }
+
+/* Light theme: the sidebar and the chips follow the page instead of staying dark. */
+:root[data-theme="light"] .sidebar { background: rgba(255, 255, 255, 0.82); }
+:root[data-theme="light"] .nav a:hover { background: rgba(15, 23, 42, 0.04); }
+:root[data-theme="light"] .nav a[aria-current="page"] {
+  background: #ffffff;
+  border-color: var(--border-strong);
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.1);
+}
+:root[data-theme="light"] .chip { background: rgba(15, 23, 42, 0.04); }
+:root[data-theme="light"] .stage .chip,
+:root[data-theme="light"] .cal-stage .chip { background: rgba(8, 10, 16, 0.6); }

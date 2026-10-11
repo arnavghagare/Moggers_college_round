@@ -49,6 +49,10 @@ npm run build
 5. If you picked head mode, the 9-point calibration starts next. Point your nose at each dot and hold still; it takes
    about 17 seconds and then shows its measured accuracy.
 
+With voice on (the default), Handsfree starts in **"Listening · Actions paused"**: it hears you but does nothing until
+you say **"start"** (or "resume"), press **Start** in the dashboard or popup, or press <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd>.
+With voice switched off there is nothing to wait for, and it starts after the short grace period as before.
+
 Tabs that were already open are picked up automatically when Handsfree is switched on. After rebuilding, press the
 reload icon on the extension's card in `chrome://extensions`.
 
@@ -60,16 +64,20 @@ reload icon on the extension's card in `chrome://extensions`.
 | Click | Rest the cursor on a link or button until the ring completes; or pinch thumb and index and release; or say "click" |
 | Click without a cursor | Say "show numbers", then "click 14" (or just the number). In voice mode the numbers are always on |
 | Click something by name | Say "click sign in" or "click images". If several match, they are numbered for you to choose |
-| Open a site | "open youtube" (new tab), "go to wikipedia dot org" (this tab), "search for train times" |
+| Open a site | "open youtube" (new tab), "go to wikipedia dot org" (this tab) |
+| Search | "search for train times" (this tab), "open tab and search train times" (new tab), "search this tab for train times" (the page's own search box if it has one, otherwise a web search in this tab). Only the words after the command are searched for |
+| Browser | "open browser settings", "open incognito window" |
 | Video | "play video", "pause video", "mute video" |
 | Keep reading | "keep scrolling", then "stop scrolling" |
 | See what you can say | "what can I say" |
 | Scroll | Say "scroll down" / "scroll up"; or hold up two fingers and move the hand up or down |
 | Drag | Pinch and hold, move, release; or say "start dragging" then "release" |
-| Type | Focus a field ("show fields", then its number), say "start dictation", speak, say "stop dictation" |
-| Go back, tabs | "go back", "go forward", "open new tab", "switch tab", "switch to tab 3", "close tab" (asks to confirm) |
-| Pause at once | Say "stop", raise an open hand for a second, or press <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd> |
-| Resume | Say "resume", raise an open hand again, or press <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd> |
+| Type (dictation) | Dictation types what you say into a text box instead of treating it as commands. Focus a field ("show fields", then its number), say "start dictation" (or just "dictation"), speak, then say "stop dictation". "undo that" removes the last phrase. For one short phrase, "type hello world" does it without entering dictation |
+| Email addresses | A spoken address is written as one lower-case word wherever it is searched or typed: "Arnav 14 Ghagare@gmail.com" or "arnav fourteen ghagare at gmail dot com" becomes `arnav14ghagare@gmail.com` |
+| Go back, tabs | "go back", "go forward", "open new tab", "close tab" (asks to confirm). Next / previous: "switch tabs", "next tab", "change tab", "previous tab". By position: "go to tab 2", "tab 2", "open tab 2", "first tab", "switch to the second tab" |
+| Pause at once | Say "pause" or "stop", raise an open hand for a second, or press <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd>. The microphone stays on so "start" still works; nothing is clicked, scrolled, typed or opened |
+| Start / resume | Say "start" or "resume", raise an open hand again, or press <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd> |
+| Microphone off | Say "stop listening", press **Stop listening**, or <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>L</kbd>. It cannot be turned back on by voice |
 | Turn off | "turn off handsfree" then "confirm", the toolbar popup, or <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>H</kbd> |
 
 The full command list is on the dashboard's **Voice** page; every gesture and its mapping is on the **Gestures** page.
@@ -147,7 +155,7 @@ Offscreen documents can only use `chrome.runtime`, so the engine reads and write
 npm test
 ```
 
-376 tests. Pure logic is tested directly; DOM behaviour uses jsdom with declared element boxes; the whole core is driven
+463 tests. Pure logic is tested directly; DOM behaviour uses jsdom with declared element boxes; the whole core is driven
 end to end with synthetic landmarks and transcripts (`tests/integration/core.test.ts`).
 
 Covered: finger extension, pinch, every pose on both hands, activation / release / debounce / cooldown, conflicting pose
@@ -227,6 +235,23 @@ movement, gestures in motion and real speech are covered by the manual checklist
   Handsfree says so when that happens. "Pause" and "mute" always work.
 - **Calibration accuracy was measured on synthetic head models**, not on people. The method is standard, but the
   number you see after your own calibration is the one that matters.
+- **"Start" has to be heard.** With voice on, nothing happens until "start" is recognised or Start is pressed. In a
+  noisy room use the Start button or <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd>. If the microphone is blocked or
+  missing in head or hand mode, Handsfree starts without waiting; in voice mode it stays paused and shows the error.
+- **Recognition restarts.** Chrome ends a recognition session by itself after about eight seconds of silence.
+  Handsfree starts the next one in the same instant (and, after a real error, with a growing delay), so listening
+  carries on through any length of silence. A word spoken in the very moment of a restart can still be clipped.
+- **Other people talking.** Chrome joins everything it hears into one phrase, so a command spoken over chatter comes
+  back with extra words and is not matched. In a noisy room use the wake word mode (Voice page), which only acts on
+  phrases that begin with the wake word.
+- **Incognito.** "open incognito window" opens one, but Handsfree only works inside it after you enable **Allow in
+  Incognito** for Handsfree on `chrome://extensions`. If incognito is disabled by policy, Chrome refuses and
+  Handsfree says so.
+- **Browser settings** open on request, but `chrome://settings` is a protected page: the cursor and numbers do not work on it.
+- **"Search this tab"** uses the page's own search box when it finds one (an input of type search, or named `q`,
+  `search` or `query`). Sites with unusual search widgets fall back to a web search in the same tab.
+- **Hand tracking checks are automated only on synthetic landmarks and one still photograph.** Pinch reliability,
+  left / right labelling and reach calibration with a moving hand need the live checks in `docs/MANUAL_TESTING.md`.
 - **Voice** depends on Chrome's online speech service, its accuracy and its language support. Commands are English.
   Background noise is measured and raises the confidence required, but nothing removes noise.
 - **Wake-word mode** filters transcripts by a spoken prefix; the recogniser still runs. It is not a low-power wake-word

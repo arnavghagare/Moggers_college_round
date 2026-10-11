@@ -20,6 +20,9 @@
     <button id="danger" type="button">Delete account</button>
     <a id="blank" href="?second=1" target="_blank" style="position: fixed; left: 12px; top: 110px">New window link</a>
     <button id="hidden" type="button">Hidden button</button>
+    <form id="site-search" role="search" style="position: fixed; left: 12px; bottom: 12px" onsubmit="event.preventDefault(); window.__searched = this.q.value;">
+      <input type="search" name="q" aria-label="Search this site" />
+    </form>
     <div class="tall"></div>
     <script>
       window.__clicks = {};
