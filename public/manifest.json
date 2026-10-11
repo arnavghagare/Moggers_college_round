@@ -1,0 +1,55 @@
+{
+  "manifest_version": 3,
+  "name": "Handsfree",
+  "version": "0.1.0",
+  "description": "Browse the web without a mouse or keyboard: head tracking, hand gestures and voice, using a standard webcam and microphone.",
+  "minimum_chrome_version": "116",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_title": "Handsfree",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png"
+    }
+  },
+  "options_page": "dashboard.html",
+  "chrome_url_overrides": {
+    "newtab": "newtab.html"
+  },
+  "background": {
+    "service_worker": "service-worker.js",
+    "type": "module"
+  },
+  "permissions": ["offscreen", "storage", "scripting"],
+  "host_permissions": ["<all_urls>"],
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_end"
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+  },
+  "commands": {
+    "toggle-pause": {
+      "suggested_key": { "default": "Alt+Shift+P" },
+      "description": "Pause or resume Handsfree"
+    },
+    "toggle-handsfree": {
+      "suggested_key": { "default": "Alt+Shift+H" },
+      "description": "Turn Handsfree on or off"
+    },
+    "toggle-listening": {
+      "suggested_key": { "default": "Alt+Shift+L" },
+      "description": "Mute or unmute voice listening"
+    }
+  }
+}

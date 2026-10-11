@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Handsfree test page</title>
+    <style>
+      body { margin: 0; font: 16px system-ui, sans-serif; }
+      #first { position: fixed; left: 12px; top: 12px; }
+      #field { position: fixed; left: 12px; top: 60px; width: 260px; height: 32px; }
+      #center { position: fixed; left: 50%; top: 50%; width: 320px; height: 180px; margin: -90px 0 0 -160px; font-size: 22px; }
+      #danger { position: fixed; right: 12px; top: 12px; height: 40px; }
+      #hidden { display: none; }
+      .tall { height: 4000px; }
+    </style>
+  </head>
+  <body>
+    <a id="first" href="#one">First link</a>
+    <input id="field" type="text" aria-label="Notes" />
+    <button id="center" type="button">Centre button</button>
+    <button id="danger" type="button">Delete account</button>
+    <a id="blank" href="?second=1" target="_blank" style="position: fixed; left: 12px; top: 110px">New window link</a>
+    <button id="hidden" type="button">Hidden button</button>
+    <div class="tall"></div>
+    <script>
+      window.__clicks = {};
+      window.__inputs = 0;
+      document.addEventListener('click', (e) => {
+        const id = e.target.id || 'other';
+        window.__clicks[id] = (window.__clicks[id] || 0) + 1;
+      });
+      document.getElementById('field').addEventListener('input', () => (window.__inputs += 1));
+    </script>
+  </body>
+</html>

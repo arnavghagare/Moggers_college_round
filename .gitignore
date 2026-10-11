@@ -1,0 +1,7 @@
+node_modules/
+dist/
+public/wasm/
+public/models/
+tests/e2e/.fixtures/
+tests/e2e/.profile/
+*.log
